@@ -1,0 +1,185 @@
+name: Release
+
+on:
+  repository_dispatch:
+    types: [release]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref (tag or branch)'
+        required: true
+      version:
+        description: 'Version (e.g., 0.1.0 or 0.1.0-beta.1)'
+        required: true
+      offline:
+        description: 'Build offline version'
+        type: boolean
+        default: false
+
+env:
+  # Check if signing secrets are configured
+  HAS_SIGNING_SECRETS: ${{ secrets.MACOS_CERT_P12 != '' && secrets.APPLE_API_KEY != '' }}
+
+jobs:
+  build:
+    runs-on: macos-14
+    permissions:
+      contents: write
+
+    steps:
+      - name: Get parameters
+        id: params
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "ref=${{ github.event.client_payload.ref }}" >> $GITHUB_OUTPUT
+            echo "version=${{ github.event.client_payload.version }}" >> $GITHUB_OUTPUT
+            echo "offline=${{ github.event.client_payload.offline || 'false' }}" >> $GITHUB_OUTPUT
+          else
+            echo "ref=${{ inputs.ref }}" >> $GITHUB_OUTPUT
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+            echo "offline=${{ inputs.offline }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check signing availability
+        id: signing
+        run: |
+          if [ "${{ env.HAS_SIGNING_SECRETS }}" = "true" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "::notice::Code signing and notarization ENABLED"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::warning::Code signing and notarization DISABLED (missing secrets)"
+          fi
+
+      - name: Checkout source (private repo)
+        uses: actions/checkout@v4
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ steps.params.outputs.ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        # version is read from package.json packageManager field
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      - name: Cache Electron
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/Library/Caches/electron
+          key: ${{ runner.os }}-electron-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Lint
+        run: pnpm lint
+        continue-on-error: true  # Don't fail on lint warnings
+
+      - name: Test
+        run: pnpm test
+
+      # Code signing steps (only when secrets are available)
+      - name: Import Apple certificates
+        if: env.HAS_SIGNING_SECRETS == 'true'
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.MACOS_CERT_P12 }}
+          p12-password: ${{ secrets.MACOS_CERT_PASSWORD }}
+
+      - name: Prepare API key
+        if: env.HAS_SIGNING_SECRETS == 'true'
+        run: |
+          echo "${{ secrets.APPLE_API_KEY }}" | base64 --decode > /tmp/AuthKey.p8
+
+      # Build with signing (when available)
+      - name: Build (online, signed)
+        if: steps.params.outputs.offline != 'true' && env.HAS_SIGNING_SECRETS == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.params.outputs.version }}
+          FLOWZERO_CODESIGN: '1'
+          FLOWZERO_NOTARIZE: '1'
+          APPLE_API_KEY_PATH: /tmp/AuthKey.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: pnpm -C apps/desktop run forge:make
+
+      - name: Build (offline, signed)
+        if: steps.params.outputs.offline == 'true' && env.HAS_SIGNING_SECRETS == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.params.outputs.version }}
+          FLOWZERO_CODESIGN: '1'
+          FLOWZERO_NOTARIZE: '1'
+          FLOWZERO_OFFLINE_BUNDLE: 'true'
+          APPLE_API_KEY_PATH: /tmp/AuthKey.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          pnpm -C apps/desktop run prepare:offline
+          pnpm -C apps/desktop run forge:make
+
+      # Build without signing (when secrets not available)
+      - name: Build (online, unsigned)
+        if: steps.params.outputs.offline != 'true' && env.HAS_SIGNING_SECRETS != 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.params.outputs.version }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: pnpm -C apps/desktop run forge:make
+
+      - name: Build (offline, unsigned)
+        if: steps.params.outputs.offline == 'true' && env.HAS_SIGNING_SECRETS != 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.params.outputs.version }}
+          FLOWZERO_OFFLINE_BUNDLE: 'true'
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          pnpm -C apps/desktop run prepare:offline
+          pnpm -C apps/desktop run forge:make
+
+      - name: Verify no source maps
+        run: |
+          if find apps/desktop/out -name "*.js.map" | grep -q .; then
+            echo "::error::Source maps found in build output!"
+            exit 1
+          fi
+          echo "No source maps in build"
+
+      - name: Determine release type
+        id: release_type
+        run: |
+          VERSION="${{ steps.params.outputs.version }}"
+          UNSIGNED=""
+          if [ "${{ env.HAS_SIGNING_SECRETS }}" != "true" ]; then
+            UNSIGNED=" (unsigned)"
+          fi
+          if [[ "$VERSION" == *"-beta"* ]] || [[ "$VERSION" == *"-alpha"* ]]; then
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          fi
+          echo "suffix=$UNSIGNED" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.params.outputs.version }}
+          name: Flowzero v${{ steps.params.outputs.version }}${{ steps.release_type.outputs.suffix }}
+          prerelease: ${{ steps.release_type.outputs.prerelease }}
+          body: |
+            ${{ env.HAS_SIGNING_SECRETS != 'true' && '⚠️ **This build is unsigned** - Code signing secrets are not configured.' || '' }}
+          files: |
+            apps/desktop/out/make/*.dmg
+            apps/desktop/out/make/*.zip
