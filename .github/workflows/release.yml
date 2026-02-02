@@ -104,16 +104,20 @@ jobs:
 
       # Code signing (only when secrets are available)
       - name: Import Apple certificates
-        if: ${{ secrets.MACOS_CERT_P12 != '' }}
+        if: ${{ env.HAS_CERT == 'true' }}
         uses: apple-actions/import-codesign-certs@v3
         with:
           p12-file-base64: ${{ secrets.MACOS_CERT_P12 }}
           p12-password: ${{ secrets.MACOS_CERT_PASSWORD }}
+        env:
+          HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
 
       - name: Prepare API key
-        if: ${{ secrets.APPLE_API_KEY != '' }}
+        if: ${{ env.HAS_API_KEY == 'true' }}
         run: |
           echo "${{ secrets.APPLE_API_KEY }}" | base64 --decode > /tmp/AuthKey.p8
+        env:
+          HAS_API_KEY: ${{ secrets.APPLE_API_KEY != '' }}
 
       - name: Prepare offline bundle
         if: ${{ needs.prepare.outputs.offline == 'true' }}
@@ -124,7 +128,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           FLOWZERO_OFFLINE_BUNDLE: ${{ needs.prepare.outputs.offline == 'true' && 'true' || '' }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          # Signing (only effective when secrets exist)
+          # Signing env vars - forge.config.ts checks these
           FLOWZERO_CODESIGN: ${{ secrets.MACOS_CERT_P12 != '' && '1' || '' }}
           FLOWZERO_NOTARIZE: ${{ secrets.APPLE_API_KEY != '' && '1' || '' }}
           APPLE_API_KEY_PATH: /tmp/AuthKey.p8
@@ -174,8 +178,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.LOCALAPPDATA }}\electron\Cache
-            ${{ env.LOCALAPPDATA }}\electron-builder\Cache
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
           key: ${{ runner.os }}-electron-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: |
             ${{ runner.os }}-electron-
@@ -314,13 +318,6 @@ jobs:
             echo "prerelease=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Check if signed
-        id: signing
-        run: |
-          # Check if signing secrets were available (by checking artifact names/content)
-          # For now, we assume unsigned if MACOS_CERT_P12 secret doesn't exist
-          echo "unsigned_note=⚠️ **macOS/Windows builds are unsigned** - See [installation guide](https://github.com/daymade/flowzero-releases#installation-guide) for instructions." >> $GITHUB_OUTPUT
-
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -330,7 +327,7 @@ jobs:
           body: |
             ## Flowzero v${{ needs.prepare.outputs.version }}
 
-            ${{ steps.signing.outputs.unsigned_note }}
+            ⚠️ **macOS builds are unsigned** - See [installation guide](https://github.com/daymade/flowzero-releases#installation-guide) for instructions.
 
             ### Downloads
 
