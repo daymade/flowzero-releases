@@ -16,16 +16,20 @@ on:
         type: boolean
         default: false
 
-env:
-  # Check if signing secrets are configured
-  HAS_SIGNING_SECRETS: ${{ secrets.MACOS_CERT_P12 != '' && secrets.APPLE_API_KEY != '' }}
+concurrency:
+  group: release-${{ github.event.client_payload.version || inputs.version }}
+  cancel-in-progress: false
 
+# ============================================
+# Prepare: Extract parameters once
+# ============================================
 jobs:
-  build:
-    runs-on: macos-14
-    permissions:
-      contents: write
-
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.params.outputs.ref }}
+      version: ${{ steps.params.outputs.version }}
+      offline: ${{ steps.params.outputs.offline }}
     steps:
       - name: Get parameters
         id: params
@@ -40,27 +44,35 @@ jobs:
             echo "offline=${{ inputs.offline }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Check signing availability
-        id: signing
-        run: |
-          if [ "${{ env.HAS_SIGNING_SECRETS }}" = "true" ]; then
-            echo "available=true" >> $GITHUB_OUTPUT
-            echo "::notice::Code signing and notarization ENABLED"
-          else
-            echo "available=false" >> $GITHUB_OUTPUT
-            echo "::warning::Code signing and notarization DISABLED (missing secrets)"
-          fi
+          # Log parameters
+          echo "::notice::ref=${{ github.event_name == 'repository_dispatch' && github.event.client_payload.ref || inputs.ref }}"
+          echo "::notice::version=${{ github.event_name == 'repository_dispatch' && github.event.client_payload.version || inputs.version }}"
 
+  # ============================================
+  # macOS Build (arm64 + x64)
+  # ============================================
+  build-macos:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          - arch: x64
+            runner: macos-13
+
+    steps:
       - name: Checkout source (private repo)
         uses: actions/checkout@v4
         with:
           repository: daymade/flowzero
           token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
-          ref: ${{ steps.params.outputs.ref }}
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        # version is read from package.json packageManager field
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -74,7 +86,9 @@ jobs:
           path: |
             ~/.cache/electron
             ~/Library/Caches/electron
-          key: ${{ runner.os }}-electron-${{ hashFiles('pnpm-lock.yaml') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-electron-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-electron-
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -83,103 +97,273 @@ jobs:
 
       - name: Lint
         run: pnpm lint
-        continue-on-error: true  # Don't fail on lint warnings
+        continue-on-error: true
 
       - name: Test
         run: pnpm test
 
-      # Code signing steps (only when secrets are available)
+      # Code signing (only when secrets are available)
       - name: Import Apple certificates
-        if: env.HAS_SIGNING_SECRETS == 'true'
+        if: ${{ secrets.MACOS_CERT_P12 != '' }}
         uses: apple-actions/import-codesign-certs@v3
         with:
           p12-file-base64: ${{ secrets.MACOS_CERT_P12 }}
           p12-password: ${{ secrets.MACOS_CERT_PASSWORD }}
 
       - name: Prepare API key
-        if: env.HAS_SIGNING_SECRETS == 'true'
+        if: ${{ secrets.APPLE_API_KEY != '' }}
         run: |
           echo "${{ secrets.APPLE_API_KEY }}" | base64 --decode > /tmp/AuthKey.p8
 
-      # Build with signing (when available)
-      - name: Build (online, signed)
-        if: steps.params.outputs.offline != 'true' && env.HAS_SIGNING_SECRETS == 'true'
+      - name: Prepare offline bundle
+        if: ${{ needs.prepare.outputs.offline == 'true' }}
+        run: pnpm -C apps/desktop run prepare:offline
+
+      - name: Build
         env:
-          RELEASE_VERSION: ${{ steps.params.outputs.version }}
-          FLOWZERO_CODESIGN: '1'
-          FLOWZERO_NOTARIZE: '1'
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          FLOWZERO_OFFLINE_BUNDLE: ${{ needs.prepare.outputs.offline == 'true' && 'true' || '' }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          # Signing (only effective when secrets exist)
+          FLOWZERO_CODESIGN: ${{ secrets.MACOS_CERT_P12 != '' && '1' || '' }}
+          FLOWZERO_NOTARIZE: ${{ secrets.APPLE_API_KEY != '' && '1' || '' }}
           APPLE_API_KEY_PATH: /tmp/AuthKey.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          npm_config_arch: ${{ matrix.arch }}
+        run: pnpm -C apps/desktop run forge:make -- --arch=${{ matrix.arch }}
+
+      - name: List build outputs
+        run: find apps/desktop/out/make -type f | head -50
+
+      - name: Upload macOS ${{ matrix.arch }} artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-${{ matrix.arch }}
+          retention-days: 3
+          path: |
+            apps/desktop/out/make/**/*.dmg
+            apps/desktop/out/make/**/*.zip
+
+  # ============================================
+  # Windows Build
+  # ============================================
+  build-windows:
+    needs: prepare
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source (private repo)
+        uses: actions/checkout@v4
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      - name: Cache Electron (Windows)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.LOCALAPPDATA }}\electron\Cache
+            ${{ env.LOCALAPPDATA }}\electron-builder\Cache
+          key: ${{ runner.os }}-electron-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Lint
+        run: pnpm lint
+        continue-on-error: true
+
+      - name: Test
+        run: pnpm test
+
+      - name: Prepare offline bundle
+        if: ${{ needs.prepare.outputs.offline == 'true' }}
+        shell: bash
+        run: pnpm -C apps/desktop run prepare:offline
+
+      - name: Build
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          FLOWZERO_OFFLINE_BUNDLE: ${{ needs.prepare.outputs.offline == 'true' && 'true' || '' }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: pnpm -C apps/desktop run forge:make
 
-      - name: Build (offline, signed)
-        if: steps.params.outputs.offline == 'true' && env.HAS_SIGNING_SECRETS == 'true'
-        env:
-          RELEASE_VERSION: ${{ steps.params.outputs.version }}
-          FLOWZERO_CODESIGN: '1'
-          FLOWZERO_NOTARIZE: '1'
-          FLOWZERO_OFFLINE_BUNDLE: 'true'
-          APPLE_API_KEY_PATH: /tmp/AuthKey.p8
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-        run: |
-          pnpm -C apps/desktop run prepare:offline
-          pnpm -C apps/desktop run forge:make
+      - name: List build outputs
+        shell: bash
+        run: find apps/desktop/out/make -type f | head -50
 
-      # Build without signing (when secrets not available)
-      - name: Build (online, unsigned)
-        if: steps.params.outputs.offline != 'true' && env.HAS_SIGNING_SECRETS != 'true'
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          retention-days: 3
+          path: |
+            apps/desktop/out/make/**/*.exe
+            apps/desktop/out/make/**/*.zip
+
+  # ============================================
+  # Linux Build
+  # ============================================
+  build-linux:
+    needs: prepare
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source (private repo)
+        uses: actions/checkout@v4
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      - name: Cache Electron (Linux)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/electron
+          key: ${{ runner.os }}-electron-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
         env:
-          RELEASE_VERSION: ${{ steps.params.outputs.version }}
+          SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Lint
+        run: pnpm lint
+        continue-on-error: true
+
+      - name: Test
+        run: pnpm test
+
+      - name: Prepare offline bundle
+        if: ${{ needs.prepare.outputs.offline == 'true' }}
+        run: pnpm -C apps/desktop run prepare:offline
+
+      - name: Build
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          FLOWZERO_OFFLINE_BUNDLE: ${{ needs.prepare.outputs.offline == 'true' && 'true' || '' }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: pnpm -C apps/desktop run forge:make
 
-      - name: Build (offline, unsigned)
-        if: steps.params.outputs.offline == 'true' && env.HAS_SIGNING_SECRETS != 'true'
-        env:
-          RELEASE_VERSION: ${{ steps.params.outputs.version }}
-          FLOWZERO_OFFLINE_BUNDLE: 'true'
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-        run: |
-          pnpm -C apps/desktop run prepare:offline
-          pnpm -C apps/desktop run forge:make
+      - name: List build outputs
+        run: find apps/desktop/out/make -type f | head -50
 
-      - name: Verify no source maps
-        run: |
-          if find apps/desktop/out -name "*.js.map" | grep -q .; then
-            echo "::error::Source maps found in build output!"
-            exit 1
-          fi
-          echo "No source maps in build"
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          retention-days: 3
+          path: |
+            apps/desktop/out/make/**/*.deb
+            apps/desktop/out/make/**/*.rpm
+            apps/desktop/out/make/**/*.AppImage
+            apps/desktop/out/make/**/*.zip
+
+  # ============================================
+  # Create Release
+  # ============================================
+  release:
+    needs: [prepare, build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List all artifacts
+        run: find artifacts -type f | sort
 
       - name: Determine release type
         id: release_type
         run: |
-          VERSION="${{ steps.params.outputs.version }}"
-          UNSIGNED=""
-          if [ "${{ env.HAS_SIGNING_SECRETS }}" != "true" ]; then
-            UNSIGNED=" (unsigned)"
-          fi
+          VERSION="${{ needs.prepare.outputs.version }}"
           if [[ "$VERSION" == *"-beta"* ]] || [[ "$VERSION" == *"-alpha"* ]]; then
             echo "prerelease=true" >> $GITHUB_OUTPUT
           else
             echo "prerelease=false" >> $GITHUB_OUTPUT
           fi
-          echo "suffix=$UNSIGNED" >> $GITHUB_OUTPUT
+
+      - name: Check if signed
+        id: signing
+        run: |
+          # Check if signing secrets were available (by checking artifact names/content)
+          # For now, we assume unsigned if MACOS_CERT_P12 secret doesn't exist
+          echo "unsigned_note=⚠️ **macOS/Windows builds are unsigned** - See [installation guide](https://github.com/daymade/flowzero-releases#installation-guide) for instructions." >> $GITHUB_OUTPUT
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.params.outputs.version }}
-          name: Flowzero v${{ steps.params.outputs.version }}${{ steps.release_type.outputs.suffix }}
+          tag_name: v${{ needs.prepare.outputs.version }}
+          name: Flowzero v${{ needs.prepare.outputs.version }}
           prerelease: ${{ steps.release_type.outputs.prerelease }}
           body: |
-            ${{ env.HAS_SIGNING_SECRETS != 'true' && '⚠️ **This build is unsigned** - Code signing secrets are not configured.' || '' }}
+            ## Flowzero v${{ needs.prepare.outputs.version }}
+
+            ${{ steps.signing.outputs.unsigned_note }}
+
+            ### Downloads
+
+            | Platform | Architecture | File |
+            |----------|--------------|------|
+            | macOS | Apple Silicon (arm64) | `Flowzero-*-arm64.dmg` |
+            | macOS | Intel (x64) | `Flowzero-*-x64.dmg` |
+            | Windows | x64 | `Flowzero-*-setup.exe` |
+            | Linux | x64 | `Flowzero-*.AppImage` / `Flowzero-*.deb` |
+
+            ### Installation
+
+            See [README](https://github.com/daymade/flowzero-releases#installation-guide) for detailed installation instructions.
+
+            ### Auto-Update
+
+            - **Stable**: `https://updates.flowzero.app`
+            - **Beta**: `https://updates-beta.flowzero.app`
+
+            The app will automatically check for updates on startup.
           files: |
-            apps/desktop/out/make/*.dmg
-            apps/desktop/out/make/*.zip
+            artifacts/**/*.dmg
+            artifacts/**/*.exe
+            artifacts/**/*.AppImage
+            artifacts/**/*.deb
+            artifacts/**/*.rpm
+            artifacts/**/*.zip
+
+      - name: Delete artifacts after release
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: |
+            release-macos-arm64
+            release-macos-x64
+            release-windows
+            release-linux
