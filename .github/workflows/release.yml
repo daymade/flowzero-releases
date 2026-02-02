@@ -225,80 +225,18 @@ jobs:
             apps/desktop/out/make/**/*.zip
 
   # ============================================
-  # Linux Build
+  # Linux Build (temporarily disabled - rpmbuild not available on CI)
   # ============================================
-  build-linux:
-    needs: prepare
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout source (private repo)
-        uses: actions/checkout@v4
-        with:
-          repository: daymade/flowzero
-          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
-          ref: ${{ needs.prepare.outputs.ref }}
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: '.nvmrc'
-          cache: 'pnpm'
-
-      - name: Cache Electron (Linux)
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/electron
-          key: ${{ runner.os }}-electron-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-electron-
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-        env:
-          SKIP_INSTALL_CONFIRM: '1'
-
-      - name: Lint
-        run: pnpm lint
-        continue-on-error: true
-
-      - name: Test
-        run: pnpm test
-        continue-on-error: true  # Allow CI to continue even if tests fail
-
-      - name: Prepare offline bundle
-        if: ${{ needs.prepare.outputs.offline == 'true' }}
-        run: pnpm -C apps/desktop run prepare:offline
-
-      - name: Build
-        env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-          FLOWZERO_OFFLINE_BUNDLE: ${{ needs.prepare.outputs.offline == 'true' && 'true' || '' }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-        run: pnpm -C apps/desktop run forge:make
-
-      - name: List build outputs
-        run: find apps/desktop/out/make -type f | head -50
-
-      - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-linux
-          retention-days: 3
-          path: |
-            apps/desktop/out/make/**/*.deb
-            apps/desktop/out/make/**/*.rpm
-            apps/desktop/out/make/**/*.AppImage
-            apps/desktop/out/make/**/*.zip
+  # build-linux:
+  #   needs: prepare
+  #   runs-on: ubuntu-latest
+  #   ... (disabled)
 
   # ============================================
   # Create Release
   # ============================================
   release:
-    needs: [prepare, build-macos, build-windows, build-linux]
+    needs: [prepare, build-macos, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -338,9 +276,7 @@ jobs:
             | Platform | Architecture | File |
             |----------|--------------|------|
             | macOS | Apple Silicon (arm64) | `Flowzero-*-arm64.dmg` |
-            | macOS | Intel (x64) | `Flowzero-*-x64.dmg` |
             | Windows | x64 | `Flowzero-*-setup.exe` |
-            | Linux | x64 | `Flowzero-*.AppImage` / `Flowzero-*.deb` |
 
             ### Installation
 
@@ -355,9 +291,6 @@ jobs:
           files: |
             artifacts/**/*.dmg
             artifacts/**/*.exe
-            artifacts/**/*.AppImage
-            artifacts/**/*.deb
-            artifacts/**/*.rpm
             artifacts/**/*.zip
 
       - name: Delete artifacts after release
@@ -365,6 +298,4 @@ jobs:
         with:
           name: |
             release-macos-arm64
-            release-macos-x64
             release-windows
-            release-linux
