@@ -60,8 +60,10 @@ jobs:
         include:
           - arch: arm64
             runner: macos-14
-          - arch: x64
-            runner: macos-13
+          # Note: macos-13 is retired. Using macos-15 which is arm64.
+          # x64 builds temporarily disabled until Intel runner is available
+          # - arch: x64
+          #   runner: macos-13
 
     steps:
       - name: Checkout source (private repo)
