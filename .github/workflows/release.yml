@@ -169,17 +169,11 @@ jobs:
           body: |
             ## Flowzero v${{ needs.prepare.outputs.version }}
 
-            ⚠️ **macOS builds are unsigned** - See [installation guide](https://github.com/daymade/flowzero-releases#installation-guide) for instructions.
-
             ### Downloads
 
             | Platform | Architecture | File |
             |----------|--------------|------|
             | macOS | Apple Silicon (arm64) | `Flowzero-*-arm64.dmg` |
-
-            ### Installation
-
-            See [README](https://github.com/daymade/flowzero-releases#installation-guide) for detailed installation instructions.
 
             ### Auto-Update
 
