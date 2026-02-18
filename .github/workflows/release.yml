@@ -97,7 +97,9 @@ jobs:
           HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
 
       - name: Verify signing identity
-        if: ${{ secrets.MACOS_CERT_P12 != '' }}
+        if: ${{ env.HAS_CERT == 'true' }}
+        env:
+          HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
         run: |
           echo "=== Keychain search list ==="
           security list-keychains -d user
