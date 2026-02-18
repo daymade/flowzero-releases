@@ -133,7 +133,11 @@ jobs:
           # Code signing: explicit keychain + debug logging
           MACOS_SIGNING_KEYCHAIN: signing_temp.keychain
           DEBUG: 'electron-osx-sign*'
-        run: pnpm -C apps/desktop run forge:make -- --arch=arm64
+        run: |
+          # Raise file descriptor limit for osx-sign walkAsync
+          # (PyTorch headers in python-runtime create thousands of files)
+          ulimit -n 65536
+          pnpm -C apps/desktop run forge:make -- --arch=arm64
 
       - name: List build outputs
         run: find apps/desktop/out/make -type f | head -50
