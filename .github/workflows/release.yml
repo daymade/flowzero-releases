@@ -132,6 +132,8 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           # Code signing: explicit keychain
           MACOS_SIGNING_KEYCHAIN: signing_temp.keychain
+          # Notarization observability (only ~10 log lines, safe unlike electron-osx-sign*)
+          DEBUG: electron-notarize*
         run: |
           # Raise file descriptor limit for osx-sign walkAsync
           # (PyTorch headers in python-runtime create thousands of files)
