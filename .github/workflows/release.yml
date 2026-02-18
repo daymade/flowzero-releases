@@ -129,7 +129,6 @@ jobs:
           APPLE_API_KEY_PATH: /tmp/AuthKey.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           # Code signing: explicit keychain + debug logging
           MACOS_SIGNING_KEYCHAIN: signing_temp.keychain
           DEBUG: 'electron-osx-sign*'
