@@ -96,6 +96,16 @@ jobs:
         env:
           HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
 
+      - name: Verify signing identity
+        if: ${{ secrets.MACOS_CERT_P12 != '' }}
+        run: |
+          echo "=== Keychain search list ==="
+          security list-keychains -d user
+          echo "=== Valid signing identities ==="
+          security find-identity -v signing_temp.keychain
+          echo "=== All keychains identity search ==="
+          security find-identity -v
+
       - name: Prepare API key
         if: ${{ env.HAS_API_KEY == 'true' }}
         run: |
@@ -118,6 +128,9 @@ jobs:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Code signing: explicit keychain + debug logging
+          MACOS_SIGNING_KEYCHAIN: signing_temp.keychain
+          DEBUG: 'electron-osx-sign*'
         run: pnpm -C apps/desktop run forge:make -- --arch=arm64
 
       - name: List build outputs
