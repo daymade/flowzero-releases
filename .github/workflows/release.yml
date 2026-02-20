@@ -56,6 +56,7 @@ jobs:
           repository: daymade/flowzero
           token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
           ref: ${{ needs.prepare.outputs.ref }}
+          lfs: true
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
