@@ -1,135 +1,96 @@
-# Flowzero
+# Flowzero Releases
 
 **English** | [中文](README_CN.md)
 
 ---
 
-**Flowzero** is a speech-to-text desktop application optimized for Chinese.
+Official release repository for **Flowzero**.
 
-📥 **[Download Latest Release](https://github.com/daymade/flowzero-releases/releases)**
+[![Latest Release](https://img.shields.io/github/v/release/daymade/flowzero-releases?display_name=tag&include_prereleases)](https://github.com/daymade/flowzero-releases/releases)
+![Platform](https://img.shields.io/badge/platform-macOS%20arm64-black)
+![Signing](https://img.shields.io/badge/security-Developer%20ID%20%2B%20Notarized-success)
 
----
+- Download page: https://github.com/daymade/flowzero-releases/releases
+- Issue tracker: https://github.com/daymade/flowzero-releases/issues
 
-## Download
+## What This Repository Is
 
-| Platform | File Format | Architecture |
-|----------|-------------|--------------|
-| macOS | `.dmg` | Apple Silicon (arm64) / Intel (x64) |
-| Windows | `-setup.exe` | x64 |
-| Linux | `.AppImage`, `.deb` | x64 |
+This repository publishes signed release artifacts for end users.
 
-Go to the [Releases](https://github.com/daymade/flowzero-releases/releases) page to download the version for your system.
+- Release binaries and tags are hosted here.
+- Build pipeline runs in GitHub Actions.
+- Source code is maintained in a private repository.
 
----
+## Platform Availability
 
-## Installation Guide
+| Platform | Architecture | Status | Files |
+|---|---|---|---|
+| macOS | Apple Silicon (arm64) | Available | `.dmg`, `.zip` |
 
-### macOS
+## Download & Install (macOS)
 
-#### ⚠️ About Gatekeeper Security Warning
+1. Open the [Releases](https://github.com/daymade/flowzero-releases/releases) page.
+2. Download the latest `.dmg` (recommended).
+3. Open the DMG and drag `Flowzero.app` into `Applications`.
+4. Launch Flowzero from `Applications`.
 
-The current release is **not code-signed with Apple Developer ID**. macOS Gatekeeper will block the app from running. This is not malware - we simply haven't joined the Apple Developer Program yet.
+## Security: Signing & Notarization
 
-**Method 1: Right-click to Open (Recommended)**
+Official macOS packages in this repository are:
 
-1. Download and open the `.dmg` file
-2. Drag Flowzero to the Applications folder
-3. Find Flowzero.app in Finder
-4. **Control-click** (or right-click) the app icon
-5. Select "Open" from the context menu
-6. Click "Open" again in the confirmation dialog
+- Signed with Apple Developer ID
+- Notarized by Apple (Gatekeeper-compatible)
 
-**Method 2: Via System Settings**
-
-1. Try to open the app - you'll see a blocked message
-2. Open "System Settings" → "Privacy & Security"
-3. Scroll to the bottom to find the blocked app notice
-4. Click "Open Anyway"
-
-**Method 3: Terminal Command (Advanced Users)**
+Optional local verification:
 
 ```bash
-xattr -d com.apple.quarantine "/Applications/Flowzero.app"
+codesign --verify --deep --strict --verbose=2 "/Applications/Flowzero.app"
+spctl --assess --type execute --verbose "/Applications/Flowzero.app"
 ```
 
-If the above command doesn't work, try recursive removal:
+## Integrity Check (Optional)
+
+After download, compute SHA256 locally:
 
 ```bash
-xattr -rd com.apple.quarantine "/Applications/Flowzero.app"
+shasum -a 256 Flowzero-*.dmg
+shasum -a 256 Flowzero-*.zip
 ```
 
----
+Then compare with the checksum shown in the corresponding GitHub Release asset details/API response.
 
-### Windows
+## Release Channels
 
-1. Download the `-setup.exe` installer
-2. Double-click to run the installer
-3. Follow the installation wizard
-4. Launch Flowzero from the Start menu
+| Channel | Tag Pattern | Auto-Update Server |
+|---|---|---|
+| Stable | `vX.Y.Z` | `https://updates.flowzero.app` |
+| Beta | `vX.Y.Z-beta.N` | `https://updates-beta.flowzero.app` |
 
-> 💡 If Windows Defender SmartScreen shows an unknown publisher warning, click "More info" → "Run anyway"
-
----
-
-### Linux
-
-**AppImage (Recommended)**
-
-```bash
-# Grant execute permission after download
-chmod +x Flowzero-*.AppImage
-
-# Run
-./Flowzero-*.AppImage
-```
-
-**Debian/Ubuntu (.deb)**
-
-```bash
-sudo dpkg -i flowzero-*.deb
-```
-
----
-
-## Update Channels
-
-| Channel | Description | Update Server |
-|---------|-------------|---------------|
-| **Stable** | Production-ready releases | `https://updates.flowzero.app` |
-| **Beta** | Preview releases (version contains `-beta.x`) | `https://updates-beta.flowzero.app` |
-
-The app has built-in auto-update functionality and will automatically check for updates.
-
----
+`Beta` releases are published as GitHub Pre-releases.
 
 ## FAQ
 
-### macOS shows "Cannot verify developer" - what do I do?
+### Why does auto-update not show a new version?
 
-See the three solutions in the "macOS Installation Guide" section above.
+1. Confirm your app channel (`stable` / `beta`) matches the release tag.
+2. Check network access to the update server.
+3. Download and install from Releases manually if needed.
 
-### Why is the app not code-signed?
+### Is this repo open source?
 
-The Apple Developer Program requires an annual fee. We're evaluating whether to join. Being unsigned doesn't affect app functionality - it just requires extra steps on first launch.
+No. This repository is for release distribution and issue tracking.
+Flowzero source code is currently private.
 
-### Auto-update not working?
+### Where should I report bugs?
 
-1. Check your network connection
-2. Verify you can access the update server
-3. Try downloading the latest version manually
+Please open an issue:
+https://github.com/daymade/flowzero-releases/issues
 
-### Where can I report issues?
+## Build Provenance
 
-Please submit feedback on the [Issues](https://github.com/daymade/flowzero-releases/issues) page.
-
----
-
-## Build Info
-
-- All releases are built automatically via GitHub Actions
-- Source code is hosted in a private repository
-
----
+- Releases are built by GitHub Actions.
+- Published artifacts are uploaded from CI jobs.
+- macOS artifacts are signed and notarized before publishing.
 
 ## License
 

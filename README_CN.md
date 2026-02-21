@@ -1,136 +1,97 @@
-# Flowzero
+# Flowzero Releases
 
 [English](README.md) | **中文**
 
 ---
 
-**Flowzero** 是一款专为中文优化的语音转文字桌面应用。
+这是 **Flowzero** 的官方发布仓库。
 
-📥 **[下载最新版本](https://github.com/daymade/flowzero-releases/releases)**
+[![Latest Release](https://img.shields.io/github/v/release/daymade/flowzero-releases?display_name=tag&include_prereleases)](https://github.com/daymade/flowzero-releases/releases)
+![Platform](https://img.shields.io/badge/platform-macOS%20arm64-black)
+![Signing](https://img.shields.io/badge/security-Developer%20ID%20%2B%20Notarized-success)
 
----
+- 下载入口：https://github.com/daymade/flowzero-releases/releases
+- 问题反馈：https://github.com/daymade/flowzero-releases/issues
 
-## 下载
+## 仓库定位
 
-| 平台 | 文件格式 | 架构 |
-|------|----------|------|
-| macOS | `.dmg` | Apple Silicon (arm64) / Intel (x64) |
-| Windows | `-setup.exe` | x64 |
-| Linux | `.AppImage`, `.deb` | x64 |
+本仓库用于发布面向最终用户的签名安装包。
 
-前往 [Releases](https://github.com/daymade/flowzero-releases/releases) 页面下载适合你系统的版本。
+- 发布二进制与版本标签在这里维护。
+- 构建流程通过 GitHub Actions 执行。
+- 源码位于私有仓库中维护。
 
----
+## 平台支持现状
 
-## 安装指南
+| 平台 | 架构 | 状态 | 文件 |
+|---|---|---|---|
+| macOS | Apple Silicon (arm64) | 已提供 | `.dmg`, `.zip` |
 
-### macOS
+## 下载与安装（macOS）
 
-#### ⚠️ 关于 Gatekeeper 安全提示
+1. 打开 [Releases](https://github.com/daymade/flowzero-releases/releases) 页面。
+2. 下载最新 `.dmg`（推荐）。
+3. 打开 DMG，将 `Flowzero.app` 拖入 `Applications`。
+4. 从 `Applications` 启动 Flowzero。
 
-当前发布的版本**未进行 Apple 代码签名**，macOS Gatekeeper 会阻止应用运行。这不是恶意软件，只是因为我们尚未加入 Apple 开发者计划。
+## 安全说明：签名与公证
 
-**方法 1：右键打开（推荐）**
+本仓库的官方 macOS 发布包：
 
-1. 下载 `.dmg` 文件并打开
-2. 将 Flowzero 拖入「应用程序」文件夹
-3. 在访达中找到 Flowzero.app
-4. **按住 Control 键点击**（或右键点击）应用图标
-5. 选择「打开」
-6. 在弹出对话框中再次点击「打开」
+- 已使用 Apple Developer ID 完成签名
+- 已通过 Apple notarization（兼容 Gatekeeper）
 
-**方法 2：通过系统设置**
-
-1. 尝试打开应用，会看到被阻止的提示
-2. 打开「系统设置」→「隐私与安全性」
-3. 滚动到底部，找到被阻止的应用提示
-4. 点击「仍要打开」
-
-**方法 3：终端命令（技术用户）**
+可选本地校验命令：
 
 ```bash
-xattr -d com.apple.quarantine "/Applications/Flowzero.app"
+codesign --verify --deep --strict --verbose=2 "/Applications/Flowzero.app"
+spctl --assess --type execute --verbose "/Applications/Flowzero.app"
 ```
 
-如果上述命令无效，尝试递归清除：
+## 完整性校验（可选）
+
+下载后可在本地计算 SHA256：
 
 ```bash
-xattr -rd com.apple.quarantine "/Applications/Flowzero.app"
+shasum -a 256 Flowzero-*.dmg
+shasum -a 256 Flowzero-*.zip
 ```
 
----
+再与对应 GitHub Release 的资产详情/API 中展示的 checksum 对比。
 
-### Windows
+## 发布通道
 
-1. 下载 `-setup.exe` 安装程序
-2. 双击运行安装程序
-3. 按照安装向导完成安装
-4. 从开始菜单启动 Flowzero
+| 通道 | Tag 规则 | 自动更新地址 |
+|---|---|---|
+| Stable | `vX.Y.Z` | `https://updates.flowzero.app` |
+| Beta | `vX.Y.Z-beta.N` | `https://updates-beta.flowzero.app` |
 
-> 💡 如果 Windows Defender SmartScreen 提示未知发布者，点击「更多信息」→「仍要运行」
-
----
-
-### Linux
-
-**AppImage（推荐）**
-
-```bash
-# 下载后赋予执行权限
-chmod +x Flowzero-*.AppImage
-
-# 运行
-./Flowzero-*.AppImage
-```
-
-**Debian/Ubuntu (.deb)**
-
-```bash
-sudo dpkg -i flowzero-*.deb
-```
-
----
-
-## 更新通道
-
-| 通道 | 说明 | 更新服务器 |
-|------|------|------------|
-| **Stable** | 生产就绪版本 | `https://updates.flowzero.app` |
-| **Beta** | 预览版本（版本号含 `-beta.x`） | `https://updates-beta.flowzero.app` |
-
-应用内置自动更新功能，会自动检查并提示更新。
-
----
+`Beta` 版本会以 GitHub Pre-release 形式发布。
 
 ## 常见问题
 
-### macOS 提示"无法验证开发者"怎么办？
+### 为什么自动更新没有出现新版本？
 
-参见上方「macOS 安装指南」中的三种解决方法。
+1. 确认应用通道（`stable` / `beta`）与版本标签一致。
+2. 检查是否可访问更新服务器。
+3. 如有需要，先从 Releases 页面手动下载安装最新版本。
 
-### 为什么没有代码签名？
+### 这是开源仓库吗？
 
-Apple 开发者计划需要年费，我们正在评估是否加入。未签名不影响应用功能，只是首次打开需要额外步骤。
-
-### 自动更新不工作？
-
-1. 确认网络连接正常
-2. 检查是否能访问更新服务器
-3. 尝试手动下载最新版本
+不是。本仓库用于发布分发与问题跟踪。
+Flowzero 源码目前在私有仓库维护。
 
 ### 在哪里反馈问题？
 
-请在 [Issues](https://github.com/daymade/flowzero-releases/issues) 页面提交问题反馈。
+请在这里提交 Issue：  
+https://github.com/daymade/flowzero-releases/issues
 
----
+## 构建来源说明
 
-## 构建信息
-
-- 所有发布版本通过 GitHub Actions 自动构建
-- 源码托管在私有仓库
-
----
+- 发布版本由 GitHub Actions 构建。
+- 发布产物由 CI 流程上传。
+- macOS 产物在发布前完成签名与公证。
 
 ## License
 
-Flowzero 是专有软件。
+Flowzero 为专有软件。
