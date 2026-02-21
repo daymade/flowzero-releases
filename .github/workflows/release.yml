@@ -121,7 +121,13 @@ jobs:
         if: ${{ needs.prepare.outputs.offline == 'true' }}
         run: pnpm -C apps/desktop run prepare:offline
 
-      - name: Build
+      - name: Prepare Python runtime
+        run: pnpm -C apps/desktop run prepare:python:embedded
+
+      - name: Build macOS helpers
+        run: node apps/desktop/scripts/build-macos-helpers-if-darwin.cjs
+
+      - name: Build + Sign + Notarize + Make
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           FLOWZERO_OFFLINE_BUNDLE: ${{ needs.prepare.outputs.offline == 'true' && 'true' || '' }}
@@ -131,17 +137,11 @@ jobs:
           APPLE_API_KEY_PATH: /tmp/AuthKey.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          # Code signing: explicit keychain
           MACOS_SIGNING_KEYCHAIN: signing_temp.keychain
-          # Observability for opaque phases (safe: ~15 log lines total, unlike electron-osx-sign* which floods)
           DEBUG: electron-notarize*,electron-installer-dmg
         run: |
-          # Raise file descriptor limit for osx-sign walkAsync
-          # (PyTorch headers in python-runtime create thousands of files)
           ulimit -n 65536
-          echo "[CI] Build started at $(date -u)"
-          pnpm -C apps/desktop run forge:make -- --arch=arm64
-          echo "[CI] Build completed at $(date -u)"
+          pnpm -C apps/desktop exec electron-forge make -- --arch=arm64
 
       - name: List build outputs
         run: find apps/desktop/out/make -type f | head -50
