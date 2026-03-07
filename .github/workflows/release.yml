@@ -8,6 +8,9 @@ on:
       ref:
         description: 'Git ref (tag or branch)'
         required: true
+      head_sha:
+        description: 'Exact source commit SHA to build'
+        required: true
       version:
         description: 'Version (e.g., 0.1.0 or 0.1.0-beta.1)'
         required: true
@@ -25,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ref: ${{ steps.params.outputs.ref }}
+      head_sha: ${{ steps.params.outputs.head_sha }}
       version: ${{ steps.params.outputs.version }}
       offline: ${{ steps.params.outputs.offline }}
     steps:
@@ -33,10 +37,12 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             echo "ref=${{ github.event.client_payload.ref }}" >> $GITHUB_OUTPUT
+            echo "head_sha=${{ github.event.client_payload.headSha }}" >> $GITHUB_OUTPUT
             echo "version=${{ github.event.client_payload.version }}" >> $GITHUB_OUTPUT
             echo "offline=${{ github.event.client_payload.offline || 'false' }}" >> $GITHUB_OUTPUT
           else
             echo "ref=${{ inputs.ref }}" >> $GITHUB_OUTPUT
+            echo "head_sha=${{ inputs.head_sha }}" >> $GITHUB_OUTPUT
             echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
             echo "offline=${{ inputs.offline }}" >> $GITHUB_OUTPUT
           fi
@@ -55,7 +61,7 @@ jobs:
         with:
           repository: daymade/flowzero
           token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
-          ref: ${{ needs.prepare.outputs.ref }}
+          ref: ${{ needs.prepare.outputs.head_sha }}
           lfs: true
 
       - name: Setup pnpm
@@ -117,16 +123,6 @@ jobs:
         env:
           HAS_API_KEY: ${{ secrets.APPLE_API_KEY != '' }}
 
-      - name: Prepare offline bundle
-        if: ${{ needs.prepare.outputs.offline == 'true' }}
-        run: pnpm -C apps/desktop run prepare:offline
-
-      - name: Prepare Python runtime
-        run: pnpm -C apps/desktop run prepare:python:embedded
-
-      - name: Build macOS helpers
-        run: node apps/desktop/scripts/build-macos-helpers-if-darwin.cjs
-
       - name: Build + Sign + Notarize + Make
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
@@ -141,7 +137,7 @@ jobs:
           DEBUG: electron-notarize*,electron-installer-dmg
         run: |
           ulimit -n 65536
-          pnpm -C apps/desktop exec electron-forge make -- --arch=arm64
+          pnpm run release:build:ci -- --version "${{ needs.prepare.outputs.version }}" --head-sha "${{ needs.prepare.outputs.head_sha }}" --arch arm64 ${{ needs.prepare.outputs.offline == 'true' && '--offline' || '' }}
 
       - name: List build outputs
         run: find apps/desktop/out/make -type f | head -50
