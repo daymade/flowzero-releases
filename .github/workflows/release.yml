@@ -161,6 +161,10 @@ jobs:
           du -sh apps/desktop/out 2>/dev/null || true
 
       - name: Submit Apple notarization
+        env:
+          APPLE_API_KEY_PATH: /tmp/AuthKey.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           pnpm run release:notarize:ci submit -- \
             --version "${{ needs.prepare.outputs.version }}" \
