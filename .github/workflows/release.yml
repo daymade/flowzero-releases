@@ -83,6 +83,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-arm64-electron-
 
+      - name: Disk diagnostics (before cleanup)
+        run: |
+          df -h
+          du -sh "$HOME/Library/Developer/CoreSimulator" 2>/dev/null || true
+          du -sh "$HOME/Library/Developer/Xcode/DerivedData" 2>/dev/null || true
+          du -sh "$HOME/.cache" 2>/dev/null || true
+
+      - name: Free macOS runner disk
+        run: |
+          rm -rf "$HOME/Library/Developer/Xcode/DerivedData" || true
+          rm -rf "$HOME/Library/Developer/CoreSimulator/Caches" || true
+          rm -rf "$HOME/Library/Developer/CoreSimulator/Devices" || true
+          rm -rf "$HOME/Library/Caches/Homebrew" || true
+          rm -rf "$HOME/.cache/ms-playwright" || true
+          df -h
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
         env:
@@ -139,6 +155,11 @@ jobs:
           ulimit -n 65536
           pnpm run release:build:ci -- --mode package --version "${{ needs.prepare.outputs.version }}" --head-sha "${{ needs.prepare.outputs.head_sha }}" --arch arm64 ${{ needs.prepare.outputs.offline == 'true' && '--offline' || '' }}
 
+      - name: Disk diagnostics (after package)
+        run: |
+          df -h
+          du -sh apps/desktop/out 2>/dev/null || true
+
       - name: Submit Apple notarization
         run: |
           pnpm run release:notarize:ci submit -- \
@@ -185,6 +206,10 @@ jobs:
         with:
           node-version-file: '.nvmrc'
           cache: 'pnpm'
+
+      - name: Disk diagnostics (before resume)
+        run: |
+          df -h
 
       - name: Cache Electron
         uses: actions/cache@v4
