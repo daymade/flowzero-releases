@@ -192,7 +192,7 @@ jobs:
   resume-notarize:
     needs: [prepare, build-macos]
     runs-on: macos-14
-    timeout-minutes: 240
+    timeout-minutes: 360
     steps:
       - name: Checkout source (private repo)
         uses: actions/checkout@v4
@@ -257,7 +257,7 @@ jobs:
             --head-sha "${{ needs.prepare.outputs.head_sha }}" \
             --app-path "apps/desktop/out/Flowzero-darwin-arm64/Flowzero.app" \
             --state-file "apps/desktop/out/notarize-stage/notarization-state.json" \
-            --max-poll-attempts 120
+            --max-poll-attempts 600
 
       - name: Build distributables from notarized package
         env:
