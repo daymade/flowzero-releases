@@ -282,10 +282,62 @@ jobs:
             apps/desktop/out/make/**/*.zip
 
   # ============================================
+  # Windows Build + Installer Smoke
+  # ============================================
+  build-windows:
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout source (private repo)
+        uses: actions/checkout@v4
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ needs.prepare.outputs.head_sha }}
+          lfs: true
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Build Windows distributables
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          FLOWZERO_OFFLINE_BUNDLE: ${{ needs.prepare.outputs.offline == 'true' && 'true' || '' }}
+          FLOWZERO_CODESIGN: ''
+          FLOWZERO_NOTARIZE: ''
+        run: |
+          pnpm run release:build:ci -- --mode make --version "${{ needs.prepare.outputs.version }}" --head-sha "${{ needs.prepare.outputs.head_sha }}" --arch x64 ${{ needs.prepare.outputs.offline == 'true' && '--offline' || '' }}
+
+      - name: Run Windows installer smoke
+        run: node scripts/run-packaged-installer-smoke-windows.cjs
+
+      - name: Upload Windows x64 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          retention-days: 3
+          path: |
+            apps/desktop/out/make/squirrel.windows/x64/*-Setup.exe
+            apps/desktop/out/make/squirrel.windows/x64/RELEASES
+            apps/desktop/out/make/squirrel.windows/x64/*.nupkg
+
+  # ============================================
   # Create Release
   # ============================================
   release:
-    needs: [prepare, resume-notarize]
+    needs: [prepare, resume-notarize, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -323,6 +375,7 @@ jobs:
             | Platform | Architecture | File |
             |----------|--------------|------|
             | macOS | Apple Silicon (arm64) | `Flowzero-*-arm64.dmg` |
+            | Windows | x64 | `Flowzero-*-Setup.exe` |
 
             ### Auto-Update
 
@@ -331,12 +384,57 @@ jobs:
           files: |
             artifacts/**/*.dmg
             artifacts/**/*.zip
+            artifacts/**/*-Setup.exe
+            artifacts/**/RELEASES
+            artifacts/**/*.nupkg
 
       - name: Delete artifacts after release
         uses: geekyeggo/delete-artifact@v5
         with:
           name: release-macos-arm64
+      - name: Delete Windows artifacts after release
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: release-windows-x64
       - name: Delete notarization stage artifacts after release
         uses: geekyeggo/delete-artifact@v5
         with:
           name: release-macos-notarize-stage
+
+  verify-published-macos:
+    needs: [prepare, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify published macOS assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: v${{ needs.prepare.outputs.version }}
+        run: |
+          ASSET_NAMES="$(gh release view "$RELEASE_TAG" --repo daymade/flowzero-releases --json assets --jq '.assets[].name')"
+          grep -Eq '^Flowzero-.*-arm64\.dmg$' <<<"$ASSET_NAMES" || { echo "::error::macOS DMG asset missing"; exit 1; }
+          grep -Eq '^Flowzero-.*-arm64\.zip$' <<<"$ASSET_NAMES" || { echo "::error::macOS ZIP asset missing"; exit 1; }
+
+  verify-published-windows:
+    needs: [prepare, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify published Windows assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: v${{ needs.prepare.outputs.version }}
+        run: |
+          ASSET_NAMES="$(gh release view "$RELEASE_TAG" --repo daymade/flowzero-releases --json assets --jq '.assets[].name')"
+          grep -Eq '^Flowzero-.*-Setup\.exe$' <<<"$ASSET_NAMES" || { echo "::error::Windows Setup.exe asset missing"; exit 1; }
+          grep -Eq '^RELEASES$' <<<"$ASSET_NAMES" || { echo "::error::Windows RELEASES asset missing"; exit 1; }
+          grep -Eq '\.nupkg$' <<<"$ASSET_NAMES" || { echo "::error::Windows nupkg asset missing"; exit 1; }
+
+  publish-release:
+    needs: [verify-published-macos, verify-published-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish gate complete
+        run: echo "release publish gate complete"

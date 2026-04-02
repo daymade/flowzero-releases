@@ -7,7 +7,7 @@
 Official release repository for **Flowzero**.
 
 [![Latest Release](https://img.shields.io/github/v/release/daymade/flowzero-releases?display_name=tag&include_prereleases)](https://github.com/daymade/flowzero-releases/releases)
-![Platform](https://img.shields.io/badge/platform-macOS%20arm64-black)
+![Platform](https://img.shields.io/badge/platform-macOS%20arm64%20%7C%20Windows%20x64-black)
 ![Signing](https://img.shields.io/badge/security-Developer%20ID%20%2B%20Notarized-success)
 
 - Download page: https://github.com/daymade/flowzero-releases/releases
@@ -26,6 +26,7 @@ This repository publishes signed release artifacts for end users.
 | Platform | Architecture | Status | Files |
 |---|---|---|---|
 | macOS | Apple Silicon (arm64) | Available | `.dmg`, `.zip` |
+| Windows | x64 | Published when the release tag includes Windows assets | `Setup.exe`, `RELEASES`, `full.nupkg` |
 
 ## Download & Install (macOS)
 
@@ -33,6 +34,16 @@ This repository publishes signed release artifacts for end users.
 2. Download the latest `.dmg` (recommended).
 3. Open the DMG and drag `Flowzero.app` into `Applications`.
 4. Launch Flowzero from `Applications`.
+
+## Download & Install (Windows)
+
+If a release tag includes Windows assets:
+
+1. Download the latest `Flowzero-*-Setup.exe`.
+2. Run the installer.
+3. Launch Flowzero from the Start menu or desktop shortcut.
+
+`RELEASES` and `*.nupkg` are updater artifacts, not the normal manual-install files.
 
 ## Security: Signing & Notarization
 
@@ -91,6 +102,7 @@ https://github.com/daymade/flowzero-releases/issues
 - Releases are built by GitHub Actions.
 - Published artifacts are uploaded from CI jobs.
 - macOS artifacts are signed and notarized before publishing.
+- Windows artifacts are built in the public release workflow, installer-smoke tested, and published alongside macOS assets when the tag includes the Windows lane.
 
 ## License
 

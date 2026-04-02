@@ -7,7 +7,7 @@
 这是 **Flowzero** 的官方发布仓库。
 
 [![Latest Release](https://img.shields.io/github/v/release/daymade/flowzero-releases?display_name=tag&include_prereleases)](https://github.com/daymade/flowzero-releases/releases)
-![Platform](https://img.shields.io/badge/platform-macOS%20arm64-black)
+![Platform](https://img.shields.io/badge/platform-macOS%20arm64%20%7C%20Windows%20x64-black)
 ![Signing](https://img.shields.io/badge/security-Developer%20ID%20%2B%20Notarized-success)
 
 - 下载入口：https://github.com/daymade/flowzero-releases/releases
@@ -26,6 +26,7 @@
 | 平台 | 架构 | 状态 | 文件 |
 |---|---|---|---|
 | macOS | Apple Silicon (arm64) | 已提供 | `.dmg`, `.zip` |
+| Windows | x64 | 当该 tag 包含 Windows 产物时提供 | `Setup.exe`, `RELEASES`, `full.nupkg` |
 
 ## 下载与安装（macOS）
 
@@ -33,6 +34,16 @@
 2. 下载最新 `.dmg`（推荐）。
 3. 打开 DMG，将 `Flowzero.app` 拖入 `Applications`。
 4. 从 `Applications` 启动 Flowzero。
+
+## 下载与安装（Windows）
+
+如果某个 release tag 带有 Windows 产物：
+
+1. 下载最新的 `Flowzero-*-Setup.exe`
+2. 运行安装器
+3. 从开始菜单或桌面快捷方式启动 Flowzero
+
+`RELEASES` 和 `*.nupkg` 是自动更新使用的产物，不是普通手动安装文件。
 
 ## 安全说明：签名与公证
 
@@ -91,6 +102,7 @@ https://github.com/daymade/flowzero-releases/issues
 - 发布版本由 GitHub Actions 构建。
 - 发布产物由 CI 流程上传。
 - macOS 产物在发布前完成签名与公证。
+- Windows 产物由 public release workflow 构建，在发布前完成 installer smoke，并在该 tag 启用 Windows lane 时与 macOS 产物一起发布。
 
 ## License
 
