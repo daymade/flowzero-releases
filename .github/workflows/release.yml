@@ -414,7 +414,7 @@ jobs:
         run: |
           ASSET_NAMES="$(gh release view "$RELEASE_TAG" --repo daymade/flowzero-releases --json assets --jq '.assets[].name')"
           grep -Eq '^Flowzero-.*-arm64\.dmg$' <<<"$ASSET_NAMES" || { echo "::error::macOS DMG asset missing"; exit 1; }
-          grep -Eq '^Flowzero-.*-arm64\.zip$' <<<"$ASSET_NAMES" || { echo "::error::macOS ZIP asset missing"; exit 1; }
+          grep -Eq '^Flowzero-darwin-arm64-.*\.zip$' <<<"$ASSET_NAMES" || { echo "::error::macOS ZIP asset missing"; exit 1; }
 
   verify-published-windows:
     needs: [prepare, release]
