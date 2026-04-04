@@ -381,11 +381,12 @@ jobs:
             echo "prerelease=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create Release
+      - name: Create Release (draft)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.prepare.outputs.version }}
           name: Flowzero v${{ needs.prepare.outputs.version }}
+          draft: true
           prerelease: ${{ steps.release_type.outputs.prerelease }}
           body: |
             ## Flowzero v${{ needs.prepare.outputs.version }}
@@ -408,6 +409,25 @@ jobs:
             artifacts/**/RELEASES
             artifacts/**/*.nupkg
 
+      - name: Verify Squirrel RELEASES references uploaded nupkg
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: v${{ needs.prepare.outputs.version }}
+        run: |
+          ASSET_NAMES="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          NUPKG_NAME="$(echo "$ASSET_NAMES" | grep '\.nupkg$' | head -1)"
+          if [ -z "$NUPKG_NAME" ]; then
+            echo "::error::No nupkg found in release assets"
+            exit 1
+          fi
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "RELEASES" --dir /tmp/verify-releases
+          if ! grep -q "$NUPKG_NAME" /tmp/verify-releases/RELEASES; then
+            echo "::error::RELEASES file does not reference $NUPKG_NAME"
+            cat /tmp/verify-releases/RELEASES
+            exit 1
+          fi
+          echo "RELEASES file correctly references $NUPKG_NAME"
+
       - name: Delete artifacts after release
         uses: geekyeggo/delete-artifact@v5
         with:
@@ -421,40 +441,126 @@ jobs:
         with:
           name: release-macos-notarize-stage
 
+  # ============================================
+  # Tier 2 Verification — macOS (cryptographic)
+  # ============================================
   verify-published-macos:
     needs: [prepare, release]
-    runs-on: ubuntu-latest
+    runs-on: macos-14
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
-      - name: Verify published macOS assets
+      - name: Download published DMG
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: v${{ needs.prepare.outputs.version }}
         run: |
-          ASSET_NAMES="$(gh release view "$RELEASE_TAG" --repo daymade/flowzero-releases --json assets --jq '.assets[].name')"
-          grep -Eq '^Flowzero-.*-arm64\.dmg$' <<<"$ASSET_NAMES" || { echo "::error::macOS DMG asset missing"; exit 1; }
-          grep -Eq '^Flowzero-darwin-arm64-.*\.zip$' <<<"$ASSET_NAMES" || { echo "::error::macOS ZIP asset missing"; exit 1; }
+          mkdir -p /tmp/verify-macos
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "*.dmg" --dir /tmp/verify-macos
+          DMG_FILE="$(ls /tmp/verify-macos/*.dmg | head -1)"
+          echo "DMG_FILE=$DMG_FILE" >> "$GITHUB_ENV"
+          echo "Downloaded: $DMG_FILE"
 
+      - name: Verify notarization staple on DMG
+        run: xcrun stapler validate "$DMG_FILE"
+
+      - name: Mount DMG and verify code signature
+        run: |
+          MOUNT_POINT="/tmp/flowzero-dmg-mount"
+          hdiutil attach "$DMG_FILE" -mountpoint "$MOUNT_POINT" -nobrowse -noverify
+
+          APP_PATH="$(find "$MOUNT_POINT" -maxdepth 1 -name '*.app' | head -1)"
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::No .app found in DMG"
+            hdiutil detach "$MOUNT_POINT" -force || true
+            exit 1
+          fi
+          echo "MOUNT_POINT=$MOUNT_POINT" >> "$GITHUB_ENV"
+
+          echo "=== Deep code signature verification ==="
+          codesign --verify --deep --strict "$APP_PATH"
+
+          echo "=== Certificate identity ==="
+          codesign -dvv "$APP_PATH" 2>&1 | grep -E "Authority|TeamIdentifier|Runtime"
+
+          echo "=== Gatekeeper assessment ==="
+          spctl --assess --type execute --verbose=2 "$APP_PATH" 2>&1 || true
+
+          echo "=== App notarization staple ==="
+          xcrun stapler validate "$APP_PATH"
+
+          echo "macOS Tier 2 verification passed"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          hdiutil detach "${MOUNT_POINT:-/tmp/flowzero-dmg-mount}" -force 2>/dev/null || true
+          rm -rf /tmp/verify-macos /tmp/flowzero-dmg-mount
+
+  # ============================================
+  # Tier 2 Verification — Windows (installer smoke)
+  # ============================================
   verify-published-windows:
     needs: [prepare, release]
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
-      - name: Verify published Windows assets
+      - name: Checkout source (for smoke test script)
+        uses: actions/checkout@v4
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ needs.prepare.outputs.head_sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Install dependencies (for smoke script)
+        run: pnpm install --frozen-lockfile
+        env:
+          SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Download published Windows assets
+        env:
+          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          RELEASE_TAG: v${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          VERIFY_DIR="$RUNNER_TEMP/verify-windows"
+          mkdir -p "$VERIFY_DIR"
+          gh release download "$RELEASE_TAG" --repo daymade/flowzero-releases --pattern "*-Setup.exe" --dir "$VERIFY_DIR"
+          gh release download "$RELEASE_TAG" --repo daymade/flowzero-releases --pattern "RELEASES" --dir "$VERIFY_DIR"
+          gh release download "$RELEASE_TAG" --repo daymade/flowzero-releases --pattern "*.nupkg" --dir "$VERIFY_DIR"
+          echo "VERIFY_DIR=$VERIFY_DIR" >> "$GITHUB_ENV"
+          ls -la "$VERIFY_DIR"
+
+      - name: Run installer smoke test on published assets
+        env:
+          FLOWZERO_WINDOWS_INSTALLER_SMOKE_ONLY: '1'
+        run: node scripts/run-packaged-installer-smoke-windows.cjs --release-dir "${{ env.VERIFY_DIR }}"
+
+  # ============================================
+  # Publish (convert draft → live)
+  # ============================================
+  publish-release:
+    needs: [prepare, verify-published-macos, verify-published-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish release (draft to live)
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: v${{ needs.prepare.outputs.version }}
         run: |
-          ASSET_NAMES="$(gh release view "$RELEASE_TAG" --repo daymade/flowzero-releases --json assets --jq '.assets[].name')"
-          grep -Eq '^Flowzero-.*-Setup\.exe$' <<<"$ASSET_NAMES" || { echo "::error::Windows Setup.exe asset missing"; exit 1; }
-          grep -Eq '^RELEASES$' <<<"$ASSET_NAMES" || { echo "::error::Windows RELEASES asset missing"; exit 1; }
-          grep -Eq '\.nupkg$' <<<"$ASSET_NAMES" || { echo "::error::Windows nupkg asset missing"; exit 1; }
-
-  publish-release:
-    needs: [verify-published-macos, verify-published-windows]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Publish gate complete
-        run: echo "release publish gate complete"
+          RELEASE_ID="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq '.databaseId')"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false > /dev/null
+          echo "Published release $RELEASE_TAG (draft to live)"
