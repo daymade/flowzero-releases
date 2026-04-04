@@ -37,7 +37,9 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             echo "ref=${{ github.event.client_payload.ref }}" >> $GITHUB_OUTPUT
-            echo "head_sha=${{ github.event.client_payload.headSha }}" >> $GITHUB_OUTPUT
+            # Accept both head_sha (snake_case) and headSha (camelCase) for robustness
+            RESOLVED_SHA="${{ github.event.client_payload.head_sha || github.event.client_payload.headSha }}"
+            echo "head_sha=$RESOLVED_SHA" >> $GITHUB_OUTPUT
             echo "version=${{ github.event.client_payload.version }}" >> $GITHUB_OUTPUT
             echo "offline=${{ github.event.client_payload.offline || 'false' }}" >> $GITHUB_OUTPUT
           else
@@ -310,6 +312,24 @@ jobs:
         run: pnpm install --frozen-lockfile
         env:
           SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Ensure POSIX checksum command compatibility
+        shell: bash
+        run: |
+          if ! command -v shasum &>/dev/null; then
+            SHIM_DIR="$RUNNER_TEMP/shasum-shim"
+            mkdir -p "$SHIM_DIR"
+            cat > "$SHIM_DIR/shasum" << 'SHEOF'
+          #!/usr/bin/env bash
+          # shasum shim: delegates to sha256sum on Windows runners
+          exec sha256sum "$@"
+          SHEOF
+            chmod +x "$SHIM_DIR/shasum"
+            echo "$SHIM_DIR" >> "$GITHUB_PATH"
+            echo "Created shasum shim at $SHIM_DIR/shasum"
+          else
+            echo "shasum already available"
+          fi
 
       - name: Build Windows distributables
         env:
