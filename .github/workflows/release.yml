@@ -558,16 +558,30 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download published DMG
+      - name: Download published macOS assets
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: v${{ needs.prepare.outputs.version }}
         run: |
           mkdir -p /tmp/verify-macos
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "*.dmg" --dir /tmp/verify-macos
-          DMG_FILE="$(ls /tmp/verify-macos/*.dmg | head -1)"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "*.zip" --dir /tmp/verify-macos
+
+          shopt -s nullglob
+          DMG_FILES=(/tmp/verify-macos/*.dmg)
+          ZIP_FILES=(/tmp/verify-macos/*.zip)
+          if [ "${#DMG_FILES[@]}" -ne 1 ] || [ "${#ZIP_FILES[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one published DMG and one published ZIP"
+            find /tmp/verify-macos -maxdepth 1 -type f -print
+            exit 1
+          fi
+
+          DMG_FILE="${DMG_FILES[0]}"
+          ZIP_FILE="${ZIP_FILES[0]}"
           echo "DMG_FILE=$DMG_FILE" >> "$GITHUB_ENV"
-          echo "Downloaded: $DMG_FILE"
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+          echo "Downloaded DMG: $DMG_FILE"
+          echo "Downloaded ZIP: $ZIP_FILE"
 
       - name: Verify signed and notarized DMG
         run: |
@@ -576,7 +590,7 @@ jobs:
           xcrun stapler validate "$DMG_FILE"
           spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_FILE"
 
-      - name: Mount DMG and verify code signature
+      - name: Mount DMG and verify contained app
         run: |
           MOUNT_POINT="/tmp/flowzero-dmg-mount"
           hdiutil attach "$DMG_FILE" -mountpoint "$MOUNT_POINT" -nobrowse -noverify
@@ -598,16 +612,40 @@ jobs:
           echo "=== Gatekeeper assessment ==="
           spctl --assess --type execute --verbose=2 "$APP_PATH"
 
-          echo "=== App notarization staple ==="
+          # Apple notarization covers the outermost distribution container.
+          # The DMG ticket covers its contained app; app-level stapling is
+          # required for the separately distributed ZIP and is checked below.
+
+          echo "Published DMG verification passed"
+
+      - name: Extract ZIP and verify updater app ticket
+        run: |
+          ZIP_DIR="/tmp/flowzero-zip-extract"
+          mkdir -p "$ZIP_DIR"
+          ditto -x -k "$ZIP_FILE" "$ZIP_DIR"
+
+          APP_PATH="$(find "$ZIP_DIR" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::No .app found in published ZIP"
+            exit 1
+          fi
+
+          echo "=== Updater app deep code signature verification ==="
+          codesign --verify --deep --strict "$APP_PATH"
+
+          echo "=== Updater app Gatekeeper assessment ==="
+          spctl --assess --type execute --verbose=2 "$APP_PATH"
+
+          echo "=== Updater app notarization staple ==="
           xcrun stapler validate "$APP_PATH"
 
-          echo "macOS Tier 2 verification passed"
+          echo "Published ZIP verification passed"
 
       - name: Cleanup
         if: always()
         run: |
           hdiutil detach "${MOUNT_POINT:-/tmp/flowzero-dmg-mount}" -force 2>/dev/null || true
-          rm -rf /tmp/verify-macos /tmp/flowzero-dmg-mount
+          rm -rf /tmp/verify-macos /tmp/flowzero-dmg-mount /tmp/flowzero-zip-extract
 
   # ============================================
   # Tier 2 Verification — Windows (installer smoke)
