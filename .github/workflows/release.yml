@@ -51,7 +51,7 @@ jobs:
           echo "::notice::version=${{ github.event_name == 'repository_dispatch' && github.event.client_payload.version || inputs.version }}"
 
   # ============================================
-  # macOS Build + Submit Notarization
+  # macOS Build + Submit Signed DMG
   # ============================================
   build-macos:
     needs: prepare
@@ -146,7 +146,7 @@ jobs:
         env:
           HAS_API_KEY: ${{ secrets.APPLE_API_KEY != '' }}
 
-      - name: Build + Sign + Package
+      - name: Build + Sign Distributables
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           FLOWZERO_OFFLINE_BUNDLE: ${{ needs.prepare.outputs.offline == 'true' && 'true' || '' }}
@@ -160,7 +160,7 @@ jobs:
           DEBUG: electron-notarize*,electron-installer-dmg
         run: |
           ulimit -n 65536
-          pnpm run release:build:ci -- --mode package --version "${{ needs.prepare.outputs.version }}" --head-sha "${{ needs.prepare.outputs.head_sha }}" --arch arm64 ${{ needs.prepare.outputs.offline == 'true' && '--offline' || '' }}
+          pnpm run release:build:ci -- --mode make --version "${{ needs.prepare.outputs.version }}" --head-sha "${{ needs.prepare.outputs.head_sha }}" --arch arm64 ${{ needs.prepare.outputs.offline == 'true' && '--offline' || '' }}
 
       - name: Disk diagnostics (after package)
         run: |
@@ -177,24 +177,27 @@ jobs:
             --version "${{ needs.prepare.outputs.version }}" \
             --head-sha "${{ needs.prepare.outputs.head_sha }}" \
             --app-path "apps/desktop/out/Flowzero-darwin-arm64/Flowzero.app" \
+            --submission-path "apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg" \
             --state-file "apps/desktop/out/notarize-stage/notarization-state.json"
 
       - name: Collect notarization stage artifacts
         run: |
           mkdir -p apps/desktop/out/notarize-stage
-          cp "apps/desktop/out/Flowzero-darwin-arm64/Flowzero.app.zip" "apps/desktop/out/notarize-stage/Flowzero.app.zip"
+          cp \
+            "apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg" \
+            "apps/desktop/out/notarize-stage/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
 
-      - name: Upload signed app + notarization state
+      - name: Upload signed DMG + notarization state
         uses: actions/upload-artifact@v4
         with:
           name: release-macos-notarize-stage
           retention-days: 7
           path: |
-            apps/desktop/out/notarize-stage/Flowzero.app.zip
+            apps/desktop/out/notarize-stage/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg
             apps/desktop/out/notarize-stage/notarization-state.json
 
   # ============================================
-  # Resume Notarization + Build Distributables
+  # Resume Notarization + Staple Submitted DMG + Rebuild ZIP
   # ============================================
   resume-notarize:
     needs: [prepare, build-macos]
@@ -241,17 +244,29 @@ jobs:
         run: |
           echo "${{ secrets.APPLE_API_KEY }}" | base64 --decode > /tmp/AuthKey.p8
 
-      - name: Download signed app + notarization state
+      - name: Download signed DMG + notarization state
         uses: actions/download-artifact@v4
         with:
           name: release-macos-notarize-stage
           path: apps/desktop/out/notarize-stage
 
-      - name: Restore signed app bundle
+      - name: Restore submitted DMG and app bundle
         run: |
+          DMG_PATH="apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
+          MOUNT_POINT="$RUNNER_TEMP/flowzero-notarize-source"
+          mkdir -p "$(dirname "$DMG_PATH")" "$MOUNT_POINT"
+          cp \
+            "apps/desktop/out/notarize-stage/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg" \
+            "$DMG_PATH"
+          hdiutil attach "$DMG_PATH" -mountpoint "$MOUNT_POINT" -nobrowse -readonly
+          trap 'hdiutil detach "$MOUNT_POINT" -force 2>/dev/null || true' EXIT
           rm -rf "apps/desktop/out/Flowzero-darwin-arm64"
           mkdir -p "apps/desktop/out/Flowzero-darwin-arm64"
-          ditto -x -k "apps/desktop/out/notarize-stage/Flowzero.app.zip" "apps/desktop/out/Flowzero-darwin-arm64"
+          ditto \
+            "$MOUNT_POINT/Flowzero.app" \
+            "apps/desktop/out/Flowzero-darwin-arm64/Flowzero.app"
+          hdiutil detach "$MOUNT_POINT"
+          trap - EXIT
 
       - name: Await Apple notarization and staple
         env:
@@ -263,10 +278,11 @@ jobs:
             --version "${{ needs.prepare.outputs.version }}" \
             --head-sha "${{ needs.prepare.outputs.head_sha }}" \
             --app-path "apps/desktop/out/Flowzero-darwin-arm64/Flowzero.app" \
+            --submission-path "apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg" \
             --state-file "apps/desktop/out/notarize-stage/notarization-state.json" \
             --max-poll-attempts 600
 
-      - name: Build distributables from notarized package
+      - name: Rebuild ZIP from stapled app
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           FLOWZERO_OFFLINE_BUNDLE: ${{ needs.prepare.outputs.offline == 'true' && 'true' || '' }}
@@ -274,7 +290,7 @@ jobs:
           FLOWZERO_NOTARIZE: ''
         run: |
           ulimit -n 65536
-          pnpm run release:build:ci -- --mode make-from-package --version "${{ needs.prepare.outputs.version }}" --head-sha "${{ needs.prepare.outputs.head_sha }}" --arch arm64
+          pnpm run release:build:ci -- --mode make-from-package --targets @electron-forge/maker-zip --version "${{ needs.prepare.outputs.version }}" --head-sha "${{ needs.prepare.outputs.head_sha }}" --arch arm64
 
       - name: List build outputs
         run: find apps/desktop/out/make -type f | head -50
@@ -474,8 +490,12 @@ jobs:
           echo "DMG_FILE=$DMG_FILE" >> "$GITHUB_ENV"
           echo "Downloaded: $DMG_FILE"
 
-      - name: Verify notarization staple on DMG
-        run: xcrun stapler validate "$DMG_FILE"
+      - name: Verify signed and notarized DMG
+        run: |
+          hdiutil verify "$DMG_FILE"
+          codesign --verify --strict --verbose=2 "$DMG_FILE"
+          xcrun stapler validate "$DMG_FILE"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_FILE"
 
       - name: Mount DMG and verify code signature
         run: |
@@ -497,7 +517,7 @@ jobs:
           codesign -dvv "$APP_PATH" 2>&1 | grep -E "Authority|TeamIdentifier|Runtime"
 
           echo "=== Gatekeeper assessment ==="
-          spctl --assess --type execute --verbose=2 "$APP_PATH" 2>&1 || true
+          spctl --assess --type execute --verbose=2 "$APP_PATH"
 
           echo "=== App notarization staple ==="
           xcrun stapler validate "$APP_PATH"
