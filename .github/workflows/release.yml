@@ -282,6 +282,17 @@ jobs:
             --state-file "apps/desktop/out/notarize-stage/notarization-state.json" \
             --max-poll-attempts 600
 
+      - name: Preserve stapled DMG outside Forge output
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          DMG_PATH="apps/desktop/out/make/Flowzero-${RELEASE_VERSION}-arm64.dmg"
+          PRESERVED_DMG="$RUNNER_TEMP/Flowzero-${RELEASE_VERSION}-arm64.stapled.dmg"
+          cp "$DMG_PATH" "$PRESERVED_DMG"
+          STAPLED_DMG_SHA256="$(shasum -a 256 "$PRESERVED_DMG" | awk '{print $1}')"
+          echo "PRESERVED_DMG=$PRESERVED_DMG" >> "$GITHUB_ENV"
+          echo "STAPLED_DMG_SHA256=$STAPLED_DMG_SHA256" >> "$GITHUB_ENV"
+
       - name: Rebuild ZIP from stapled app
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
@@ -291,6 +302,20 @@ jobs:
         run: |
           ulimit -n 65536
           pnpm run release:build:ci -- --mode make-from-package --targets @electron-forge/maker-zip --version "${{ needs.prepare.outputs.version }}" --head-sha "${{ needs.prepare.outputs.head_sha }}" --arch arm64
+
+      - name: Restore and verify submitted DMG
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          DMG_PATH="apps/desktop/out/make/Flowzero-${RELEASE_VERSION}-arm64.dmg"
+          mkdir -p "$(dirname "$DMG_PATH")"
+          cp "$PRESERVED_DMG" "$DMG_PATH"
+          ACTUAL_DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
+          test "$ACTUAL_DMG_SHA256" = "$STAPLED_DMG_SHA256"
+          hdiutil verify "$DMG_PATH"
+          codesign --verify --strict --verbose=2 "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
 
       - name: List build outputs
         run: find apps/desktop/out/make -type f | head -50
