@@ -416,12 +416,66 @@ jobs:
       contents: write
 
     steps:
-      - name: Download all artifacts
+      # Stage 1 intentionally retains an unstapled DMG with the same basename as
+      # the final DMG. Only final artifacts may enter the release upload tree.
+      - name: Download final macOS release artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          name: release-macos-arm64
+          path: artifacts/release-macos-arm64
 
-      - name: List all artifacts
+      - name: Download final Windows release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-windows-x64
+          path: artifacts/release-windows-x64
+
+      - name: Validate final release artifact manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          DMG_FILES=(artifacts/release-macos-arm64/*.dmg)
+          ZIP_FILES=(artifacts/release-macos-arm64/zip/darwin/arm64/*.zip)
+          SETUP_FILES=(artifacts/release-windows-x64/*-Setup.exe)
+          NUPKG_FILES=(artifacts/release-windows-x64/*.nupkg)
+
+          if [[ ${#DMG_FILES[@]} -ne 1 || ${#ZIP_FILES[@]} -ne 1 || ${#SETUP_FILES[@]} -ne 1 || ${#NUPKG_FILES[@]} -ne 1 || ! -f artifacts/release-windows-x64/RELEASES ]]; then
+            echo "::error::Final release artifact manifest is incomplete or ambiguous"
+            find artifacts -type f | sort
+            exit 1
+          fi
+
+          mapfile -t ALL_FILES < <(find artifacts -type f | sort)
+          EXPECTED_FILES=(
+            "${DMG_FILES[@]}"
+            "${ZIP_FILES[@]}"
+            "${SETUP_FILES[@]}"
+            "${NUPKG_FILES[@]}"
+            artifacts/release-windows-x64/RELEASES
+          )
+          UNEXPECTED_FILES="$(comm -13 \
+            <(printf '%s\n' "${EXPECTED_FILES[@]}" | sort) \
+            <(printf '%s\n' "${ALL_FILES[@]}" | sort))"
+          if [[ -n "$UNEXPECTED_FILES" ]]; then
+            echo "::error::Unexpected file found in final release artifact manifest"
+            echo "$UNEXPECTED_FILES"
+            exit 1
+          fi
+
+          DUPLICATE_BASENAMES="$({
+            while IFS= read -r FILE; do
+              basename "$FILE"
+            done < <(find artifacts -type f)
+          } | sort | uniq -d)"
+          if [[ -n "$DUPLICATE_BASENAMES" ]]; then
+            echo "::error::Duplicate release asset basenames are forbidden"
+            echo "$DUPLICATE_BASENAMES"
+            exit 1
+          fi
+
+      - name: List final release artifacts
         run: find artifacts -type f | sort
 
       - name: Determine release type
@@ -456,11 +510,11 @@ jobs:
             - **Stable**: `https://updates.flowzero.app`
             - **Beta**: `https://updates-beta.flowzero.app`
           files: |
-            artifacts/**/*.dmg
-            artifacts/**/*.zip
-            artifacts/**/*-Setup.exe
-            artifacts/**/RELEASES
-            artifacts/**/*.nupkg
+            artifacts/release-macos-arm64/*.dmg
+            artifacts/release-macos-arm64/**/*.zip
+            artifacts/release-windows-x64/*-Setup.exe
+            artifacts/release-windows-x64/RELEASES
+            artifacts/release-windows-x64/*.nupkg
 
       - name: Verify Squirrel RELEASES references uploaded nupkg
         env:
