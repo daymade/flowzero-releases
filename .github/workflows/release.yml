@@ -31,6 +31,7 @@ jobs:
       head_sha: ${{ steps.params.outputs.head_sha }}
       version: ${{ steps.params.outputs.version }}
       offline: ${{ steps.params.outputs.offline }}
+      channel: ${{ contains(steps.params.outputs.version, '-') && 'beta' || 'stable' }}
     steps:
       - name: Get parameters
         id: params
@@ -494,8 +495,7 @@ jobs:
       - name: Determine release type
         id: release_type
         run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          if [[ "$VERSION" == *"-beta"* ]] || [[ "$VERSION" == *"-alpha"* ]]; then
+          if [[ "${{ needs.prepare.outputs.channel }}" == 'beta' ]]; then
             {
               echo "prerelease=true"
               echo "download_base=https://updates-beta.flowzero.app"
@@ -752,3 +752,35 @@ jobs:
           RELEASE_ID="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq '.databaseId')"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false > /dev/null
           echo "Published release $RELEASE_TAG (draft to live)"
+
+  # ============================================
+  # Promote verified release to update channel
+  # ============================================
+  promote-update-channel:
+    needs: [prepare, publish-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: flowzero-update-channel-${{ needs.prepare.outputs.channel }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout release infrastructure
+        uses: actions/checkout@v4
+
+      - name: Verify channel manifest generator
+        run: node --test .github/scripts/generate-update-channel-manifest.test.mjs
+
+      - name: Promote verified release
+        uses: ./.github/actions/promote-update-channel
+        with:
+          release-tag: v${{ needs.prepare.outputs.version }}
+          channel: ${{ needs.prepare.outputs.channel }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+          R2_PUBLIC_BASE_URL: https://downloads.flowzero.app

@@ -6,6 +6,18 @@ on:
       tag:
         description: 'Existing release tag to mirror (for example v0.1.2-beta.5)'
         required: true
+      channel:
+        description: 'Channel pointer to promote after mirror verification'
+        required: true
+        type: choice
+        options:
+          - beta
+          - stable
+      allow_downgrade:
+        description: 'Explicitly allow rollback to an older published release'
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -48,3 +60,21 @@ jobs:
           ALIYUN_OSS_REGION: cn-beijing
           ALIYUN_OSS_BUCKET: flowzero-releases-cn
           ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
+
+      - name: Verify channel manifest generator
+        run: node --test .github/scripts/generate-update-channel-manifest.test.mjs
+
+      - name: Promote mirrored release to the selected channel
+        uses: ./.github/actions/promote-update-channel
+        with:
+          release-tag: ${{ inputs.tag }}
+          channel: ${{ inputs.channel }}
+          allow-downgrade: ${{ inputs.allow_downgrade }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+          R2_PUBLIC_BASE_URL: https://downloads.flowzero.app

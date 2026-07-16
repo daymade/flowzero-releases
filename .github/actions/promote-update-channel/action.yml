@@ -1,0 +1,185 @@
+name: Promote Flowzero update channel
+description: Generates an immutable channel snapshot and atomically advances the R2 current pointer
+
+inputs:
+  release-tag:
+    description: Published GitHub release tag to promote
+    required: true
+  channel:
+    description: Update channel, stable or beta
+    required: true
+  allow-downgrade:
+    description: Allow an explicit rollback to a release that is not the latest published tag
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Generate and promote channel snapshot
+      shell: bash
+      env:
+        RELEASE_TAG: ${{ inputs.release-tag }}
+        UPDATE_CHANNEL: ${{ inputs.channel }}
+        ALLOW_DOWNGRADE: ${{ inputs.allow-downgrade }}
+      run: |
+        set -euo pipefail
+
+        for REQUIRED_ENV in \
+          GH_TOKEN \
+          AWS_ACCESS_KEY_ID \
+          AWS_SECRET_ACCESS_KEY \
+          R2_ENDPOINT \
+          R2_BUCKET \
+          R2_PUBLIC_BASE_URL; do
+          if [[ -z "${!REQUIRED_ENV:-}" ]]; then
+            echo "::error::Missing required channel promotion configuration: $REQUIRED_ENV"
+            exit 1
+          fi
+        done
+        if [[ "$UPDATE_CHANNEL" != 'stable' && "$UPDATE_CHANNEL" != 'beta' ]]; then
+          echo "::error::Update channel must be stable or beta"
+          exit 1
+        fi
+        if [[ "$ALLOW_DOWNGRADE" != 'true' && "$ALLOW_DOWNGRADE" != 'false' ]]; then
+          echo "::error::allow-downgrade must be true or false"
+          exit 1
+        fi
+
+        WORK_DIR="$RUNNER_TEMP/flowzero-channel-promotion"
+        rm -rf "$WORK_DIR"
+        mkdir -p "$WORK_DIR"
+
+        gh api \
+          "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+          > "$WORK_DIR/release.json"
+
+        IS_DRAFT="$(jq -r '.draft' "$WORK_DIR/release.json")"
+        IS_PRERELEASE="$(jq -r '.prerelease' "$WORK_DIR/release.json")"
+        if [[ "$IS_DRAFT" != 'false' ]]; then
+          echo "::error::Release $RELEASE_TAG is still a draft"
+          exit 1
+        fi
+        if [[ "$UPDATE_CHANNEL" == 'beta' && "$IS_PRERELEASE" != 'true' ]]; then
+          echo "::error::Release $RELEASE_TAG is not a beta prerelease"
+          exit 1
+        fi
+        if [[ "$UPDATE_CHANNEL" == 'stable' && "$IS_PRERELEASE" != 'false' ]]; then
+          echo "::error::Release $RELEASE_TAG is not a stable release"
+          exit 1
+        fi
+
+        if [[ "$ALLOW_DOWNGRADE" != 'true' ]]; then
+          if [[ "$UPDATE_CHANNEL" == 'beta' ]]; then
+            LATEST_TAG="$(
+              gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                --jq 'map(select(.draft == false and .prerelease == true))[0].tag_name'
+            )"
+          else
+            LATEST_TAG="$(
+              gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                --jq 'map(select(.draft == false and .prerelease == false))[0].tag_name'
+            )"
+          fi
+          if [[ "$LATEST_TAG" != "$RELEASE_TAG" ]]; then
+            echo "::error::Refusing to replace $UPDATE_CHANNEL current with $RELEASE_TAG; latest published tag is $LATEST_TAG"
+            exit 1
+          fi
+        fi
+
+        gh release download \
+          "$RELEASE_TAG" \
+          --repo "$GITHUB_REPOSITORY" \
+          --pattern 'mac-update-integrity.json' \
+          --dir "$WORK_DIR"
+        gh release download \
+          "$RELEASE_TAG" \
+          --repo "$GITHUB_REPOSITORY" \
+          --pattern 'RELEASES' \
+          --dir "$WORK_DIR"
+
+        node .github/scripts/generate-update-channel-manifest.mjs \
+          --release-json "$WORK_DIR/release.json" \
+          --channel "$UPDATE_CHANNEL" \
+          --mac-integrity "$WORK_DIR/mac-update-integrity.json" \
+          --releases "$WORK_DIR/RELEASES" \
+          --output "$WORK_DIR/channel-manifest.json"
+
+        MANIFEST_SHA256="$(sha256sum "$WORK_DIR/channel-manifest.json" | awk '{print $1}')"
+        IMMUTABLE_KEY="channels/$UPDATE_CHANNEL/releases/$RELEASE_TAG.json"
+        CURRENT_KEY="channels/$UPDATE_CHANNEL/current.json"
+        IMMUTABLE_URL="${R2_PUBLIC_BASE_URL%/}/$IMMUTABLE_KEY"
+        CURRENT_URL="${R2_PUBLIC_BASE_URL%/}/$CURRENT_KEY"
+
+        if EXISTING_HEAD="$(
+          aws s3api head-object \
+            --bucket "$R2_BUCKET" \
+            --key "$IMMUTABLE_KEY" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --query '[ContentLength,Metadata.sha256]' \
+            --output text 2>/dev/null
+        )"; then
+          read -r EXISTING_SIZE EXISTING_SHA256 <<<"$EXISTING_HEAD"
+          LOCAL_SIZE="$(stat -c '%s' "$WORK_DIR/channel-manifest.json")"
+          if [[ "$EXISTING_SIZE" != "$LOCAL_SIZE" || "$EXISTING_SHA256" != "$MANIFEST_SHA256" ]]; then
+            echo "::error::Immutable channel snapshot conflict for $IMMUTABLE_KEY"
+            exit 1
+          fi
+        else
+          aws s3 cp \
+            "$WORK_DIR/channel-manifest.json" \
+            "s3://$R2_BUCKET/$IMMUTABLE_KEY" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type 'application/json' \
+            --cache-control 'public, max-age=31536000, immutable' \
+            --metadata "sha256=$MANIFEST_SHA256" \
+            --only-show-errors
+        fi
+
+        curl \
+          --fail \
+          --silent \
+          --show-error \
+          --retry 12 \
+          --retry-all-errors \
+          --retry-delay 5 \
+          "$IMMUTABLE_URL" \
+          | sha256sum --check <(printf '%s  -\n' "$MANIFEST_SHA256")
+
+        # R2 object replacement is atomic. The immutable snapshot is verified
+        # first, so current.json is the only mutable promotion point.
+        aws s3 cp \
+          "$WORK_DIR/channel-manifest.json" \
+          "s3://$R2_BUCKET/$CURRENT_KEY" \
+          --endpoint-url "$R2_ENDPOINT" \
+          --content-type 'application/json' \
+          --cache-control 'public, max-age=0, must-revalidate, stale-if-error=86400' \
+          --metadata "sha256=$MANIFEST_SHA256" \
+          --only-show-errors
+
+        read -r CURRENT_SIZE CURRENT_SHA256 < <(
+          aws s3api head-object \
+            --bucket "$R2_BUCKET" \
+            --key "$CURRENT_KEY" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --query '[ContentLength,Metadata.sha256]' \
+            --output text
+        )
+        LOCAL_SIZE="$(stat -c '%s' "$WORK_DIR/channel-manifest.json")"
+        if [[ "$CURRENT_SIZE" != "$LOCAL_SIZE" || "$CURRENT_SHA256" != "$MANIFEST_SHA256" ]]; then
+          echo "::error::Current channel pointer verification failed"
+          exit 1
+        fi
+
+        curl \
+          --fail \
+          --silent \
+          --show-error \
+          --retry 12 \
+          --retry-all-errors \
+          --retry-delay 5 \
+          --header 'Cache-Control: no-cache' \
+          "${CURRENT_URL}?promotion=${MANIFEST_SHA256}" \
+          | sha256sum --check <(printf '%s  -\n' "$MANIFEST_SHA256")
+
+        echo "Promoted $RELEASE_TAG to $UPDATE_CHANNEL via $CURRENT_URL"
