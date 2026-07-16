@@ -20,6 +20,7 @@ This repository records signed releases and runs the release pipeline.
 
 - Release tags and an archival copy of every binary are hosted here.
 - Normal downloads and automatic updates use the channel-configured Flowzero release origin. The public release workflow writes the same immutable objects to the global R2 mirror and the Beijing OSS mirror before publishing.
+- After both published-platform verification jobs pass, CI generates an immutable channel snapshot and atomically advances the R2 `current.json` pointer. The Vercel update service reads that single snapshot and adapts it to the existing macOS and Windows update protocols.
 - Build pipeline runs in GitHub Actions.
 - Source code is maintained in a private repository.
 
@@ -102,6 +103,7 @@ https://github.com/daymade/flowzero-releases/issues
 - Releases are built by GitHub Actions.
 - Published artifacts are uploaded from CI jobs.
 - The exact release manifest is mirrored to R2 and Beijing OSS, then verified through both public origins before the GitHub release draft is created.
+- A release becomes visible to automatic update clients only after the published macOS and Windows checks pass and the channel pointer is promoted. Re-running `Mirror Published Release` repairs or explicitly rolls back that pointer without rebuilding binaries.
 - The final notarized macOS ZIP receives a generated SHA-512 integrity sidecar before mirroring; clients consume channel metadata from the update service and stream the versioned ZIP from the mirror.
 - macOS artifacts are signed and notarized before publishing.
 - Windows artifacts are built in the public release workflow, installer-smoke tested, and published alongside macOS assets when the tag includes the Windows lane.
