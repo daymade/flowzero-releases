@@ -1,6 +1,8 @@
 const RELEASE_KEY_PATTERN = /^releases\/v[0-9A-Za-z.+-]+\/[^/]+$/;
 const IMMUTABLE_CHANNEL_KEY_PATTERN =
   /^channels\/(stable|beta)\/releases\/v[0-9A-Za-z.+-]+\.json$/;
+const IMMUTABLE_CHANNEL_STATE_KEY_PATTERN =
+  /^channels\/(stable|beta)\/states\/no-release\.json$/;
 const CURRENT_CHANNEL_KEY_PATTERN =
   /^channels\/(stable|beta)\/current\.json$/;
 
@@ -36,6 +38,7 @@ function parseObjectKey(requestUrl) {
   const isAllowedKey =
     RELEASE_KEY_PATTERN.test(key)
     || IMMUTABLE_CHANNEL_KEY_PATTERN.test(key)
+    || IMMUTABLE_CHANNEL_STATE_KEY_PATTERN.test(key)
     || CURRENT_CHANNEL_KEY_PATTERN.test(key);
   if (!isAllowedKey || key.includes('\\') || key.includes('\0')) {
     return null;
