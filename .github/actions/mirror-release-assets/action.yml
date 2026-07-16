@@ -79,7 +79,10 @@ runs:
           fi
 
           PUBLIC_URL="$R2_PUBLIC_BASE_URL/$OBJECT_KEY"
-          RANGE_FILE="$RUNNER_TEMP/flowzero-r2-range-$RANDOM"
+          HEADERS_FILE="$RUNNER_TEMP/flowzero-r2-headers-$RANDOM"
+          # R2 custom domains can answer a byte-range probe with HTTP 200 and the
+          # full body. Use a bodyless HEAD size check after the authenticated
+          # R2 size + SHA metadata check above.
           HTTP_CODE="$(
             curl \
               --fail \
@@ -88,16 +91,20 @@ runs:
               --retry 12 \
               --retry-all-errors \
               --retry-delay 5 \
-              --range 0-0 \
-              --output "$RANGE_FILE" \
+              --head \
+              --dump-header "$HEADERS_FILE" \
+              --output /dev/null \
               --write-out '%{http_code}' \
               "$PUBLIC_URL"
           )"
-          if [[ "$HTTP_CODE" != '206' || "$(stat -c '%s' "$RANGE_FILE")" != '1' ]]; then
-            echo "::error::Public mirror range verification failed for $ASSET_NAME (HTTP $HTTP_CODE)"
+          PUBLIC_SIZE="$(
+            awk 'tolower($1) == "content-length:" { gsub("\\r", "", $2); print $2 }' "$HEADERS_FILE" | tail -1
+          )"
+          if [[ "$HTTP_CODE" != '200' || "$PUBLIC_SIZE" != "$LOCAL_SIZE" ]]; then
+            echo "::error::Public mirror verification failed for $ASSET_NAME (HTTP $HTTP_CODE, size $PUBLIC_SIZE)"
             exit 1
           fi
-          rm "$RANGE_FILE"
+          rm "$HEADERS_FILE"
 
           echo "Mirrored and verified $ASSET_NAME ($LOCAL_SIZE bytes, sha256=$LOCAL_SHA256)"
         done
