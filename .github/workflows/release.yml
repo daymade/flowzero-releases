@@ -408,9 +408,9 @@ jobs:
             apps/desktop/out/make/squirrel.windows/x64/*.nupkg
 
   # ============================================
-  # Create Release
+  # Create GitHub Release draft
   # ============================================
-  release:
+  create-release-draft:
     needs: [prepare, resume-notarize, build-windows]
     runs-on: ubuntu-latest
     permissions:
@@ -574,15 +574,15 @@ jobs:
           fi
           echo "RELEASES file correctly references $NUPKG_NAME"
 
-      - name: Delete artifacts after release
+      - name: Delete macOS build artifacts after draft upload
         uses: geekyeggo/delete-artifact@v5
         with:
           name: release-macos-arm64
-      - name: Delete Windows artifacts after release
+      - name: Delete Windows build artifacts after draft upload
         uses: geekyeggo/delete-artifact@v5
         with:
           name: release-windows-x64
-      - name: Delete notarization stage artifacts after release
+      - name: Delete notarization stage artifacts after draft upload
         uses: geekyeggo/delete-artifact@v5
         with:
           name: release-macos-notarize-stage
@@ -590,14 +590,14 @@ jobs:
   # ============================================
   # Tier 2 Verification — macOS (cryptographic)
   # ============================================
-  verify-published-macos:
-    needs: [prepare, release]
+  verify-draft-macos:
+    needs: [prepare, create-release-draft]
     runs-on: macos-14
     timeout-minutes: 30
     permissions:
       contents: write
     steps:
-      - name: Download published macOS assets
+      - name: Download macOS assets from the GitHub draft
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: v${{ needs.prepare.outputs.version }}
@@ -610,7 +610,7 @@ jobs:
           DMG_FILES=(/tmp/verify-macos/*.dmg)
           ZIP_FILES=(/tmp/verify-macos/*.zip)
           if [ "${#DMG_FILES[@]}" -ne 1 ] || [ "${#ZIP_FILES[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one published DMG and one published ZIP"
+            echo "::error::Expected exactly one draft DMG and one draft ZIP"
             find /tmp/verify-macos -maxdepth 1 -type f -print
             exit 1
           fi
@@ -655,7 +655,7 @@ jobs:
           # The DMG ticket covers its contained app; app-level stapling is
           # required for the separately distributed ZIP and is checked below.
 
-          echo "Published DMG verification passed"
+          echo "GitHub draft DMG verification passed"
 
       - name: Extract ZIP and verify updater app ticket
         run: |
@@ -665,7 +665,7 @@ jobs:
 
           APP_PATH="$(find "$ZIP_DIR" -maxdepth 2 -type d -name '*.app' -print -quit)"
           if [ -z "$APP_PATH" ]; then
-            echo "::error::No .app found in published ZIP"
+            echo "::error::No .app found in draft ZIP"
             exit 1
           fi
 
@@ -678,7 +678,7 @@ jobs:
           echo "=== Updater app notarization staple ==="
           xcrun stapler validate "$APP_PATH"
 
-          echo "Published ZIP verification passed"
+          echo "GitHub draft ZIP verification passed"
 
       - name: Cleanup
         if: always()
@@ -689,8 +689,8 @@ jobs:
   # ============================================
   # Tier 2 Verification — Windows (installer smoke)
   # ============================================
-  verify-published-windows:
-    needs: [prepare, release]
+  verify-draft-windows:
+    needs: [prepare, create-release-draft]
     runs-on: windows-latest
     timeout-minutes: 60
     permissions:
@@ -716,7 +716,7 @@ jobs:
         env:
           SKIP_INSTALL_CONFIRM: '1'
 
-      - name: Download published Windows assets
+      - name: Download Windows assets from the GitHub draft
         env:
           GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
           RELEASE_TAG: v${{ needs.prepare.outputs.version }}
@@ -730,7 +730,7 @@ jobs:
           echo "VERIFY_DIR=$VERIFY_DIR" >> "$GITHUB_ENV"
           ls -la "$VERIFY_DIR"
 
-      - name: Run installer smoke test on published assets
+      - name: Run installer smoke test on GitHub draft assets
         env:
           FLOWZERO_WINDOWS_INSTALLER_SMOKE_ONLY: '1'
         run: node scripts/run-packaged-installer-smoke-windows.cjs --release-dir "${{ env.VERIFY_DIR }}"
@@ -739,7 +739,7 @@ jobs:
   # Publish (convert draft → live)
   # ============================================
   publish-release:
-    needs: [prepare, verify-published-macos, verify-published-windows]
+    needs: [prepare, verify-draft-macos, verify-draft-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
