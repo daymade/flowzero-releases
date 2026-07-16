@@ -80,6 +80,10 @@ Then compare with the checksum shown in the corresponding GitHub Release asset d
 
 `Beta` releases are published as GitHub Pre-releases.
 
+Before a channel has its first published release, the explicit
+`Initialize Empty Update Channel` workflow may publish a `no_release` snapshot.
+It refuses to clear a channel once a matching published release exists.
+
 ## FAQ
 
 ### Why does auto-update not show a new version?

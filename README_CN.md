@@ -80,6 +80,10 @@ shasum -a 256 Flowzero-*.zip
 
 `Beta` 版本会以 GitHub Pre-release 形式发布。
 
+通道尚无任何已发布版本时，可运行显式的 `Initialize Empty Update Channel`
+workflow 写入 `no_release` 快照；一旦该通道已有匹配的已发布版本，workflow
+会拒绝清空通道。
+
 ## 常见问题
 
 ### 为什么自动更新没有出现新版本？

@@ -40,6 +40,15 @@ function expectedPrerelease(channel) {
   return channel === 'beta';
 }
 
+export function buildNoReleaseChannelManifest(channel) {
+  expectedPrerelease(channel);
+  return {
+    schema: SCHEMA,
+    channel,
+    state: 'no_release',
+  };
+}
+
 function normalizeAssets(assets) {
   if (!Array.isArray(assets) || assets.length === 0) {
     throw new Error('Published release assets must be non-empty');
@@ -163,6 +172,7 @@ function parseArguments(argv) {
     '--channel',
     '--mac-integrity',
     '--releases',
+    '--state',
     '--output',
   ]);
   const values = {};
@@ -179,28 +189,59 @@ function parseArguments(argv) {
     if (Object.hasOwn(values, key)) throw new Error(`Duplicate argument: ${key}`);
     values[key] = value;
   }
-  for (const key of allowed) {
+  for (const key of ['--channel', '--output']) {
     if (!values[key]) throw new Error(`Missing required argument: ${key}`);
   }
+
+  const state = values['--state'] || 'published';
+  if (!['published', 'no_release'].includes(state)) {
+    throw new Error('State must be published or no_release');
+  }
+
+  const releaseArguments = [
+    '--release-json',
+    '--mac-integrity',
+    '--releases',
+  ];
+  if (state === 'published') {
+    for (const key of releaseArguments) {
+      if (!values[key]) throw new Error(`Missing required argument: ${key}`);
+    }
+  } else {
+    for (const key of releaseArguments) {
+      if (values[key]) {
+        throw new Error(`${key} is not allowed for a no_release manifest`);
+      }
+    }
+  }
+
+  values.state = state;
   return values;
 }
 
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArguments(argv);
-  const releaseBuffer = await readFile(path.resolve(args['--release-json']));
-  const macIntegrityBuffer = await readFile(path.resolve(args['--mac-integrity']));
-  const releasesBuffer = await readFile(path.resolve(args['--releases']));
-  const manifest = buildChannelManifest({
-    release: JSON.parse(releaseBuffer.toString('utf8')),
-    channel: args['--channel'],
-    macUpdateIntegrity: JSON.parse(macIntegrityBuffer.toString('utf8')),
-    squirrelReleases: releasesBuffer.toString('utf8'),
-    macIntegrityByteLength: macIntegrityBuffer.byteLength,
-    squirrelReleasesByteLength: releasesBuffer.byteLength,
-  });
+  let manifest;
+  if (args.state === 'no_release') {
+    manifest = buildNoReleaseChannelManifest(args['--channel']);
+  } else {
+    const releaseBuffer = await readFile(path.resolve(args['--release-json']));
+    const macIntegrityBuffer = await readFile(path.resolve(args['--mac-integrity']));
+    const releasesBuffer = await readFile(path.resolve(args['--releases']));
+    manifest = buildChannelManifest({
+      release: JSON.parse(releaseBuffer.toString('utf8')),
+      channel: args['--channel'],
+      macUpdateIntegrity: JSON.parse(macIntegrityBuffer.toString('utf8')),
+      squirrelReleases: releasesBuffer.toString('utf8'),
+      macIntegrityByteLength: macIntegrityBuffer.byteLength,
+      squirrelReleasesByteLength: releasesBuffer.byteLength,
+    });
+  }
   const output = path.resolve(args['--output']);
   await writeFile(output, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-  process.stdout.write(`Generated ${output} for ${manifest.tag}\n`);
+  process.stdout.write(
+    `Generated ${output} for ${manifest.tag || `${manifest.channel}:no_release`}\n`,
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

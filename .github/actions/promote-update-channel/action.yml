@@ -4,7 +4,11 @@ description: Generates an immutable channel snapshot and atomically advances the
 inputs:
   release-tag:
     description: Published GitHub release tag to promote
-    required: true
+    required: false
+  state:
+    description: Channel state to promote, published or no_release
+    required: false
+    default: published
   channel:
     description: Update channel, stable or beta
     required: true
@@ -20,6 +24,7 @@ runs:
       shell: bash
       env:
         RELEASE_TAG: ${{ inputs.release-tag }}
+        CHANNEL_STATE: ${{ inputs.state }}
         UPDATE_CHANNEL: ${{ inputs.channel }}
         ALLOW_DOWNGRADE: ${{ inputs.allow-downgrade }}
       run: |
@@ -41,6 +46,10 @@ runs:
           echo "::error::Update channel must be stable or beta"
           exit 1
         fi
+        if [[ "$CHANNEL_STATE" != 'published' && "$CHANNEL_STATE" != 'no_release' ]]; then
+          echo "::error::Channel state must be published or no_release"
+          exit 1
+        fi
         if [[ "$ALLOW_DOWNGRADE" != 'true' && "$ALLOW_DOWNGRADE" != 'false' ]]; then
           echo "::error::allow-downgrade must be true or false"
           exit 1
@@ -50,63 +59,99 @@ runs:
         rm -rf "$WORK_DIR"
         mkdir -p "$WORK_DIR"
 
-        gh api \
-          "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
-          > "$WORK_DIR/release.json"
-
-        IS_DRAFT="$(jq -r '.draft' "$WORK_DIR/release.json")"
-        IS_PRERELEASE="$(jq -r '.prerelease' "$WORK_DIR/release.json")"
-        if [[ "$IS_DRAFT" != 'false' ]]; then
-          echo "::error::Release $RELEASE_TAG is still a draft"
-          exit 1
-        fi
-        if [[ "$UPDATE_CHANNEL" == 'beta' && "$IS_PRERELEASE" != 'true' ]]; then
-          echo "::error::Release $RELEASE_TAG is not a beta prerelease"
-          exit 1
-        fi
-        if [[ "$UPDATE_CHANNEL" == 'stable' && "$IS_PRERELEASE" != 'false' ]]; then
-          echo "::error::Release $RELEASE_TAG is not a stable release"
-          exit 1
-        fi
-
-        if [[ "$ALLOW_DOWNGRADE" != 'true' ]]; then
-          if [[ "$UPDATE_CHANNEL" == 'beta' ]]; then
-            LATEST_TAG="$(
-              gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-                --jq 'map(select(.draft == false and .prerelease == true))[0].tag_name'
-            )"
-          else
-            LATEST_TAG="$(
-              gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-                --jq 'map(select(.draft == false and .prerelease == false))[0].tag_name'
-            )"
-          fi
-          if [[ "$LATEST_TAG" != "$RELEASE_TAG" ]]; then
-            echo "::error::Refusing to replace $UPDATE_CHANNEL current with $RELEASE_TAG; latest published tag is $LATEST_TAG"
+        if [[ "$CHANNEL_STATE" == 'no_release' ]]; then
+          if [[ -n "$RELEASE_TAG" ]]; then
+            echo "::error::release-tag must be empty for no_release"
             exit 1
           fi
+          if [[ "$ALLOW_DOWNGRADE" != 'false' ]]; then
+            echo "::error::allow-downgrade is not valid for no_release"
+            exit 1
+          fi
+          if [[ "$UPDATE_CHANNEL" == 'beta' ]]; then
+            PUBLISHED_TAG="$(
+              gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                --jq 'map(select(.draft == false and .prerelease == true))[0].tag_name // ""'
+            )"
+          else
+            PUBLISHED_TAG="$(
+              gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                --jq 'map(select(.draft == false and .prerelease == false))[0].tag_name // ""'
+            )"
+          fi
+          if [[ -n "$PUBLISHED_TAG" ]]; then
+            echo "::error::Refusing to clear $UPDATE_CHANNEL; published release $PUBLISHED_TAG exists"
+            exit 1
+          fi
+          node .github/scripts/generate-update-channel-manifest.mjs \
+            --state no_release \
+            --channel "$UPDATE_CHANNEL" \
+            --output "$WORK_DIR/channel-manifest.json"
+          IMMUTABLE_KEY="channels/$UPDATE_CHANNEL/states/no-release.json"
+        else
+          if [[ -z "$RELEASE_TAG" ]]; then
+            echo "::error::release-tag is required for published state"
+            exit 1
+          fi
+
+          gh api \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            > "$WORK_DIR/release.json"
+
+          IS_DRAFT="$(jq -r '.draft' "$WORK_DIR/release.json")"
+          IS_PRERELEASE="$(jq -r '.prerelease' "$WORK_DIR/release.json")"
+          if [[ "$IS_DRAFT" != 'false' ]]; then
+            echo "::error::Release $RELEASE_TAG is still a draft"
+            exit 1
+          fi
+          if [[ "$UPDATE_CHANNEL" == 'beta' && "$IS_PRERELEASE" != 'true' ]]; then
+            echo "::error::Release $RELEASE_TAG is not a beta prerelease"
+            exit 1
+          fi
+          if [[ "$UPDATE_CHANNEL" == 'stable' && "$IS_PRERELEASE" != 'false' ]]; then
+            echo "::error::Release $RELEASE_TAG is not a stable release"
+            exit 1
+          fi
+
+          if [[ "$ALLOW_DOWNGRADE" != 'true' ]]; then
+            if [[ "$UPDATE_CHANNEL" == 'beta' ]]; then
+              LATEST_TAG="$(
+                gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                  --jq 'map(select(.draft == false and .prerelease == true))[0].tag_name'
+              )"
+            else
+              LATEST_TAG="$(
+                gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                  --jq 'map(select(.draft == false and .prerelease == false))[0].tag_name'
+              )"
+            fi
+            if [[ "$LATEST_TAG" != "$RELEASE_TAG" ]]; then
+              echo "::error::Refusing to replace $UPDATE_CHANNEL current with $RELEASE_TAG; latest published tag is $LATEST_TAG"
+              exit 1
+            fi
+          fi
+
+          gh release download \
+            "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'mac-update-integrity.json' \
+            --dir "$WORK_DIR"
+          gh release download \
+            "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'RELEASES' \
+            --dir "$WORK_DIR"
+
+          node .github/scripts/generate-update-channel-manifest.mjs \
+            --release-json "$WORK_DIR/release.json" \
+            --channel "$UPDATE_CHANNEL" \
+            --mac-integrity "$WORK_DIR/mac-update-integrity.json" \
+            --releases "$WORK_DIR/RELEASES" \
+            --output "$WORK_DIR/channel-manifest.json"
+          IMMUTABLE_KEY="channels/$UPDATE_CHANNEL/releases/$RELEASE_TAG.json"
         fi
 
-        gh release download \
-          "$RELEASE_TAG" \
-          --repo "$GITHUB_REPOSITORY" \
-          --pattern 'mac-update-integrity.json' \
-          --dir "$WORK_DIR"
-        gh release download \
-          "$RELEASE_TAG" \
-          --repo "$GITHUB_REPOSITORY" \
-          --pattern 'RELEASES' \
-          --dir "$WORK_DIR"
-
-        node .github/scripts/generate-update-channel-manifest.mjs \
-          --release-json "$WORK_DIR/release.json" \
-          --channel "$UPDATE_CHANNEL" \
-          --mac-integrity "$WORK_DIR/mac-update-integrity.json" \
-          --releases "$WORK_DIR/RELEASES" \
-          --output "$WORK_DIR/channel-manifest.json"
-
         MANIFEST_SHA256="$(sha256sum "$WORK_DIR/channel-manifest.json" | awk '{print $1}')"
-        IMMUTABLE_KEY="channels/$UPDATE_CHANNEL/releases/$RELEASE_TAG.json"
         CURRENT_KEY="channels/$UPDATE_CHANNEL/current.json"
         IMMUTABLE_URL="${R2_PUBLIC_BASE_URL%/}/$IMMUTABLE_KEY"
         CURRENT_URL="${R2_PUBLIC_BASE_URL%/}/$CURRENT_KEY"
@@ -182,4 +227,4 @@ runs:
           "${CURRENT_URL}?promotion=${MANIFEST_SHA256}" \
           | sha256sum --check <(printf '%s  -\n' "$MANIFEST_SHA256")
 
-        echo "Promoted $RELEASE_TAG to $UPDATE_CHANNEL via $CURRENT_URL"
+        echo "Promoted $CHANNEL_STATE to $UPDATE_CHANNEL via $CURRENT_URL"

@@ -1,0 +1,42 @@
+name: Initialize Empty Update Channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Channel that has no published release yet'
+        required: true
+        type: choice
+        options:
+          - stable
+          - beta
+
+permissions:
+  contents: read
+
+jobs:
+  initialize:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: flowzero-update-channel-${{ inputs.channel }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout release infrastructure
+        uses: actions/checkout@v4
+
+      - name: Verify channel manifest generator
+        run: node --test .github/scripts/generate-update-channel-manifest.test.mjs
+
+      - name: Promote explicit no-release state
+        uses: ./.github/actions/promote-update-channel
+        with:
+          state: no_release
+          channel: ${{ inputs.channel }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+          R2_PUBLIC_BASE_URL: https://downloads.flowzero.app

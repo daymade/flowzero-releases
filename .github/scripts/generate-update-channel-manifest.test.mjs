@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   buildChannelManifest,
+  buildNoReleaseChannelManifest,
   SCHEMA,
 } from './generate-update-channel-manifest.mjs';
 
@@ -103,5 +104,20 @@ test('rejects sidecar and updater evidence that does not match assets', () => {
   assert.throws(
     () => build({ squirrelReleases: 'missing package' }),
     /does not reference/,
+  );
+});
+
+test('generates a deterministic explicit no-release channel snapshot', () => {
+  assert.deepEqual(buildNoReleaseChannelManifest('stable'), {
+    schema: SCHEMA,
+    channel: 'stable',
+    state: 'no_release',
+  });
+});
+
+test('rejects an invalid no-release channel', () => {
+  assert.throws(
+    () => buildNoReleaseChannelManifest('nightly'),
+    /stable or beta/,
   );
 });
