@@ -20,7 +20,7 @@
 
 - 版本标签和每份二进制的归档副本在这里维护。
 - 普通下载和自动更新使用当前通道明确选择的 Flowzero 发布源；发布流程会在正式发布前把同一份不可变产物写入全球 R2 镜像和北京 OSS 镜像。
-- macOS 与 Windows 的已发布产物验收都通过后，CI 才生成不可变的通道快照并原子推进 R2 `current.json` 指针。Vercel 更新服务只读取这一个快照，再适配现有 macOS 与 Windows 更新协议。
+- macOS 与 Windows 的 GitHub draft 资产验收都通过后，CI 才将 draft 转为正式发布，生成不可变的通道快照并原子推进 R2 `current.json` 指针。Vercel 更新服务只读取这一个快照，再适配现有 macOS 与 Windows 更新协议。
 - 构建流程通过 GitHub Actions 执行。
 - 源码位于私有仓库中维护。
 
@@ -107,7 +107,7 @@ https://github.com/daymade/flowzero-releases/issues
 - 发布版本由 GitHub Actions 构建。
 - 发布产物由 CI 流程上传。
 - GitHub release draft 创建前，CI 会先把完整发布清单镜像到 R2 和北京 OSS，并通过两个公开源完成验证。
-- 只有已发布 macOS 与 Windows 验收都通过并完成通道指针推进后，新版本才会对自动更新客户端可见。重新运行 `Mirror Published Release` 可以修复指针，或在显式允许时回滚到旧发布，无需重新构建二进制；`mirror_assets` 输入决定是否重新校验已验证过的二进制镜像。
+- 只有 macOS 与 Windows 的 draft 资产验收通过、GitHub draft 转为正式发布并完成通道指针推进后，新版本才会对自动更新客户端可见。重新运行 `Mirror Published Release` 可以修复指针，或在显式允许时回滚到旧发布，无需重新构建二进制；`mirror_assets` 输入决定是否重新校验已验证过的二进制镜像。
 - 最终公证后的 macOS ZIP 会先生成 SHA-512 完整性 sidecar；客户端从更新服务读取当前通道元数据，再从镜像流式下载版本化 ZIP。
 - macOS 产物在发布前完成签名与公证。
 - Windows 产物由 public release workflow 构建，在发布前完成 installer smoke，并在该 tag 启用 Windows lane 时与 macOS 产物一起发布。
