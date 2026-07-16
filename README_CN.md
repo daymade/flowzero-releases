@@ -19,7 +19,7 @@
 本仓库记录签名版本并运行发布流水线。
 
 - 版本标签和每份二进制的归档副本在这里维护。
-- 普通下载和自动更新统一使用 Flowzero 发布镜像。
+- 普通下载和自动更新统一通过 `workers/release-download/` 中受版本控制的 Worker 网关访问 Flowzero 发布镜像。
 - 构建流程通过 GitHub Actions 执行。
 - 源码位于私有仓库中维护。
 
@@ -27,7 +27,7 @@
 
 | 平台 | 架构 | 状态 | 文件 |
 |---|---|---|---|
-| macOS | Apple Silicon (arm64) | 已提供 | `.dmg`, `.zip` |
+| macOS | Apple Silicon (arm64) | 已提供 | `.dmg`、`.zip`、更新完整性元数据 |
 | Windows | x64 | 当该 tag 包含 Windows 产物时提供 | `Setup.exe`, `RELEASES`, `full.nupkg` |
 
 ## 下载与安装（macOS）
@@ -101,7 +101,8 @@ https://github.com/daymade/flowzero-releases/issues
 
 - 发布版本由 GitHub Actions 构建。
 - 发布产物由 CI 流程上传。
-- GitHub release draft 创建前，CI 会先镜像并验证完整发布清单。
+- GitHub release draft 创建前，CI 会先镜像完整发布清单，并通过公开 Worker 网关完成验证。
+- 最终公证后的 macOS ZIP 会先生成 SHA-512 完整性 sidecar；客户端从更新服务读取当前通道元数据，再从镜像流式下载版本化 ZIP。
 - macOS 产物在发布前完成签名与公证。
 - Windows 产物由 public release workflow 构建，在发布前完成 installer smoke，并在该 tag 启用 Windows lane 时与 macOS 产物一起发布。
 

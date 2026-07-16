@@ -19,7 +19,7 @@ Official release repository for **Flowzero**.
 This repository records signed releases and runs the release pipeline.
 
 - Release tags and an archival copy of every binary are hosted here.
-- Normal downloads and automatic updates use the Flowzero release mirror.
+- Normal downloads and automatic updates use the Flowzero release mirror through the versioned Worker gateway in `workers/release-download/`.
 - Build pipeline runs in GitHub Actions.
 - Source code is maintained in a private repository.
 
@@ -27,7 +27,7 @@ This repository records signed releases and runs the release pipeline.
 
 | Platform | Architecture | Status | Files |
 |---|---|---|---|
-| macOS | Apple Silicon (arm64) | Available | `.dmg`, `.zip` |
+| macOS | Apple Silicon (arm64) | Available | `.dmg`, `.zip`, updater integrity metadata |
 | Windows | x64 | Published when the release tag includes Windows assets | `Setup.exe`, `RELEASES`, `full.nupkg` |
 
 ## Download & Install (macOS)
@@ -101,7 +101,8 @@ https://github.com/daymade/flowzero-releases/issues
 
 - Releases are built by GitHub Actions.
 - Published artifacts are uploaded from CI jobs.
-- The exact release manifest is mirrored and verified before the GitHub release draft is created.
+- The exact release manifest is mirrored and verified through the public Worker gateway before the GitHub release draft is created.
+- The final notarized macOS ZIP receives a generated SHA-512 integrity sidecar before mirroring; clients consume channel metadata from the update service and stream the versioned ZIP from the mirror.
 - macOS artifacts are signed and notarized before publishing.
 - Windows artifacts are built in the public release workflow, installer-smoke tested, and published alongside macOS assets when the tag includes the Windows lane.
 

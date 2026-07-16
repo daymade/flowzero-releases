@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "flowzero-release-download",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-16",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "routes": [
+    {
+      "pattern": "downloads.flowzero.app/*",
+      "zone_name": "flowzero.app"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "RELEASES",
+      "bucket_name": "flowzero-releases"
+    }
+  ]
+}

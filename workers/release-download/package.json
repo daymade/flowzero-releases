@@ -1,0 +1,17 @@
+{
+  "name": "flowzero-release-download-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy --config wrangler.jsonc",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "wrangler": "4.111.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "packageManager": "pnpm@10.28.1"
+}

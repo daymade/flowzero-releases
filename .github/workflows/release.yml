@@ -433,6 +433,14 @@ jobs:
           name: release-windows-x64
           path: artifacts/release-windows-x64
 
+      - name: Generate macOS updater integrity metadata
+        run: |
+          node --test .github/scripts/generate-macos-update-integrity.test.mjs
+          node .github/scripts/generate-macos-update-integrity.mjs \
+            --asset-root artifacts/release-macos-arm64 \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --output artifacts/release-metadata/mac-update-integrity.json
+
       - name: Validate final release artifact manifest
         shell: bash
         run: |
@@ -443,8 +451,9 @@ jobs:
           ZIP_FILES=(artifacts/release-macos-arm64/zip/darwin/arm64/*.zip)
           SETUP_FILES=(artifacts/release-windows-x64/*-Setup.exe)
           NUPKG_FILES=(artifacts/release-windows-x64/*.nupkg)
+          INTEGRITY_FILES=(artifacts/release-metadata/mac-update-integrity.json)
 
-          if [[ ${#DMG_FILES[@]} -ne 1 || ${#ZIP_FILES[@]} -ne 1 || ${#SETUP_FILES[@]} -ne 1 || ${#NUPKG_FILES[@]} -ne 1 || ! -f artifacts/release-windows-x64/RELEASES ]]; then
+          if [[ ${#DMG_FILES[@]} -ne 1 || ${#ZIP_FILES[@]} -ne 1 || ${#SETUP_FILES[@]} -ne 1 || ${#NUPKG_FILES[@]} -ne 1 || ${#INTEGRITY_FILES[@]} -ne 1 || ! -f artifacts/release-windows-x64/RELEASES ]]; then
             echo "::error::Final release artifact manifest is incomplete or ambiguous"
             find artifacts -type f | sort
             exit 1
@@ -456,6 +465,7 @@ jobs:
             "${ZIP_FILES[@]}"
             "${SETUP_FILES[@]}"
             "${NUPKG_FILES[@]}"
+            "${INTEGRITY_FILES[@]}"
             artifacts/release-windows-x64/RELEASES
           )
           UNEXPECTED_FILES="$(comm -13 \
@@ -537,6 +547,7 @@ jobs:
             artifacts/release-windows-x64/*-Setup.exe
             artifacts/release-windows-x64/RELEASES
             artifacts/release-windows-x64/*.nupkg
+            artifacts/release-metadata/mac-update-integrity.json
 
       - name: Verify Squirrel RELEASES references uploaded nupkg
         env:
