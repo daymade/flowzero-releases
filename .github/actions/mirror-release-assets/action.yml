@@ -1,5 +1,5 @@
 name: Mirror Flowzero release assets
-description: Uploads the exact release manifest to R2 and verifies private and public reads
+description: Uploads the exact release manifest to R2 and Beijing OSS and verifies authenticated and public reads
 
 inputs:
   asset-root:
@@ -20,7 +20,18 @@ runs:
       run: |
         set -euo pipefail
 
-        for REQUIRED_ENV in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET R2_PUBLIC_BASE_URL; do
+        for REQUIRED_ENV in \
+          AWS_ACCESS_KEY_ID \
+          AWS_SECRET_ACCESS_KEY \
+          R2_ENDPOINT \
+          R2_BUCKET \
+          R2_PUBLIC_BASE_URL \
+          ALIYUN_OSS_ACCESS_KEY_ID \
+          ALIYUN_OSS_ACCESS_KEY_SECRET \
+          ALIYUN_OSS_ENDPOINT \
+          ALIYUN_OSS_REGION \
+          ALIYUN_OSS_BUCKET \
+          ALIYUN_OSS_PUBLIC_BASE_URL; do
           if [[ -z "${!REQUIRED_ENV:-}" ]]; then
             echo "::error::Missing required mirror configuration: $REQUIRED_ENV"
             exit 1
@@ -32,12 +43,94 @@ runs:
           exit 1
         fi
 
+        OSSUTIL_VERSION='2.3.0'
+        OSSUTIL_ARCHIVE="$RUNNER_TEMP/ossutil-${OSSUTIL_VERSION}-linux-amd64.zip"
+        OSSUTIL_ROOT="$RUNNER_TEMP/ossutil-${OSSUTIL_VERSION}-linux-amd64"
+        OSSUTIL_SHA256='3ae4d9fc85a7a6e9f5654d1599766f1a3a42a3692870887b5ae9338d582ef65a'
+        curl \
+          --fail \
+          --location \
+          --silent \
+          --show-error \
+          --retry 3 \
+          --output "$OSSUTIL_ARCHIVE" \
+          "https://gosspublic.alicdn.com/ossutil/v2/${OSSUTIL_VERSION}/ossutil-${OSSUTIL_VERSION}-linux-amd64.zip"
+        echo "$OSSUTIL_SHA256  $OSSUTIL_ARCHIVE" | sha256sum --check
+        unzip -q "$OSSUTIL_ARCHIVE" -d "$RUNNER_TEMP"
+        OSSUTIL_BIN="$OSSUTIL_ROOT/ossutil"
+        "$OSSUTIL_BIN" version
+
+        OSSUTIL_ARGS=(
+          --access-key-id "$ALIYUN_OSS_ACCESS_KEY_ID"
+          --access-key-secret "$ALIYUN_OSS_ACCESS_KEY_SECRET"
+          --endpoint "$ALIYUN_OSS_ENDPOINT"
+          --region "$ALIYUN_OSS_REGION"
+          --sign-version v4
+          --ignore-env-var
+          --user-agent flowzero-release-ci
+        )
+
         mapfile -d '' ASSET_FILES < <(find "$ASSET_ROOT" -type f -print0)
-        if [[ ${#ASSET_FILES[@]} -lt 5 || ${#ASSET_FILES[@]} -gt 6 ]]; then
-          echo "::error::Mirror input must contain the legacy five-file or current six-file release manifest"
-          find "$ASSET_ROOT" -type f | sort
+        if [[ ${#ASSET_FILES[@]} -eq 0 ]]; then
+          echo "::error::Mirror input is empty"
           exit 1
         fi
+
+        verify_public_origin() {
+          local LABEL="$1"
+          local PUBLIC_URL="$2"
+          local EXPECTED_SIZE="$3"
+          local HEADERS_FILE="$RUNNER_TEMP/flowzero-${LABEL}-headers-$RANDOM"
+          local HTTP_CODE
+          local PUBLIC_SIZE
+          local RANGE_RESULT
+
+          HTTP_CODE="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --retry 12 \
+              --retry-all-errors \
+              --retry-delay 5 \
+              --head \
+              --dump-header "$HEADERS_FILE" \
+              --output /dev/null \
+              --write-out '%{http_code}' \
+              "$PUBLIC_URL"
+          )"
+          PUBLIC_SIZE="$(
+            awk 'tolower($1) == "content-length:" { gsub("\\r", "", $2); print $2 }' "$HEADERS_FILE" | tail -1
+          )"
+          rm -f "$HEADERS_FILE"
+
+          if [[ "$HTTP_CODE" != '200' || "$PUBLIC_SIZE" != "$EXPECTED_SIZE" ]]; then
+            echo "::error::$LABEL public mirror verification failed (HTTP $HTTP_CODE, size $PUBLIC_SIZE)"
+            exit 1
+          fi
+
+          if ! RANGE_RESULT="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --retry 12 \
+              --retry-all-errors \
+              --retry-delay 5 \
+              --range 0-0 \
+              --max-filesize 1 \
+              --output /dev/null \
+              --write-out '%{http_code} %{size_download}' \
+              "$PUBLIC_URL"
+          )"; then
+            echo "::error::$LABEL public mirror byte-range verification failed"
+            exit 1
+          fi
+          if [[ "$RANGE_RESULT" != '206 1' ]]; then
+            echo "::error::$LABEL public mirror byte-range contract failed ($RANGE_RESULT)"
+            exit 1
+          fi
+        }
 
         for FILE in "${ASSET_FILES[@]}"; do
           ASSET_NAME="$(basename "$FILE")"
@@ -79,54 +172,56 @@ runs:
             exit 1
           fi
 
-          PUBLIC_URL="$R2_PUBLIC_BASE_URL/$OBJECT_KEY"
-          HEADERS_FILE="$RUNNER_TEMP/flowzero-r2-headers-$RANDOM"
-          # Verify the public Worker gateway without downloading the artifact.
-          # The authenticated R2 metadata check above remains the checksum SSOT.
-          HTTP_CODE="$(
-            curl \
-              --fail \
-              --silent \
-              --show-error \
-              --retry 12 \
-              --retry-all-errors \
-              --retry-delay 5 \
-              --head \
-              --dump-header "$HEADERS_FILE" \
-              --output /dev/null \
-              --write-out '%{http_code}' \
-              "$PUBLIC_URL"
-          )"
-          PUBLIC_SIZE="$(
-            awk 'tolower($1) == "content-length:" { gsub("\\r", "", $2); print $2 }' "$HEADERS_FILE" | tail -1
-          )"
-          if [[ "$HTTP_CODE" != '200' || "$PUBLIC_SIZE" != "$LOCAL_SIZE" ]]; then
-            echo "::error::Public mirror verification failed for $ASSET_NAME (HTTP $HTTP_CODE, size $PUBLIC_SIZE)"
-            exit 1
-          fi
-          rm "$HEADERS_FILE"
-
-          if ! RANGE_RESULT="$(
-            curl \
-              --fail \
-              --silent \
-              --show-error \
-              --retry 12 \
-              --retry-all-errors \
-              --retry-delay 5 \
-              --range 0-0 \
-              --max-filesize 1 \
-              --output /dev/null \
-              --write-out '%{http_code} %{size_download}' \
-              "$PUBLIC_URL"
+          OSS_HEAD_JSON=''
+          if OSS_HEAD_JSON="$(
+            "$OSSUTIL_BIN" api head-object \
+              --bucket "$ALIYUN_OSS_BUCKET" \
+              --key "$OBJECT_KEY" \
+              --output-format json \
+              "${OSSUTIL_ARGS[@]}" 2>/dev/null
           )"; then
-            echo "::error::Public mirror byte-range verification failed for $ASSET_NAME"
-            exit 1
+            OSS_EXISTING_SIZE="$(jq -r '.Header["Content-Length"][0] // empty' <<<"$OSS_HEAD_JSON")"
+            OSS_EXISTING_SHA256="$(jq -r '.Header["X-Oss-Meta-Sha256"][0] // empty' <<<"$OSS_HEAD_JSON")"
+            if [[ "$OSS_EXISTING_SIZE" != "$LOCAL_SIZE" || "$OSS_EXISTING_SHA256" != "$LOCAL_SHA256" ]]; then
+              echo "::error::OSS immutable object conflict for $ASSET_NAME"
+              exit 1
+            fi
+          else
+            "$OSSUTIL_BIN" cp \
+              "$FILE" \
+              "oss://$ALIYUN_OSS_BUCKET/$OBJECT_KEY" \
+              --content-type "$CONTENT_TYPE" \
+              --cache-control 'public, max-age=31536000, immutable' \
+              --metadata "sha256=$LOCAL_SHA256" \
+              --checkpoint-dir "$RUNNER_TEMP/flowzero-oss-checkpoints" \
+              --parallel 8 \
+              "${OSSUTIL_ARGS[@]}"
           fi
-          if [[ "$RANGE_RESULT" != '206 1' ]]; then
-            echo "::error::Public mirror byte-range contract failed for $ASSET_NAME ($RANGE_RESULT)"
+
+          OSS_HEAD_JSON="$(
+            "$OSSUTIL_BIN" api head-object \
+              --bucket "$ALIYUN_OSS_BUCKET" \
+              --key "$OBJECT_KEY" \
+              --output-format json \
+              "${OSSUTIL_ARGS[@]}"
+          )"
+          OSS_REMOTE_SIZE="$(jq -r '.Header["Content-Length"][0] // empty' <<<"$OSS_HEAD_JSON")"
+          OSS_REMOTE_SHA256="$(jq -r '.Header["X-Oss-Meta-Sha256"][0] // empty' <<<"$OSS_HEAD_JSON")"
+          if [[ "$OSS_REMOTE_SIZE" != "$LOCAL_SIZE" || "$OSS_REMOTE_SHA256" != "$LOCAL_SHA256" ]]; then
+            echo "::error::OSS object verification failed for $ASSET_NAME"
             exit 1
           fi
 
-          echo "Mirrored and verified $ASSET_NAME ($LOCAL_SIZE bytes, sha256=$LOCAL_SHA256)"
+          # Authenticated metadata checks above are the checksum SSOT.
+          # Public probes validate transport without downloading the artifact.
+          verify_public_origin \
+            r2 \
+            "$R2_PUBLIC_BASE_URL/$OBJECT_KEY" \
+            "$LOCAL_SIZE"
+          verify_public_origin \
+            oss \
+            "$ALIYUN_OSS_PUBLIC_BASE_URL/$OBJECT_KEY" \
+            "$LOCAL_SIZE"
+
+          echo "Mirrored and verified $ASSET_NAME in R2 and OSS"
         done

@@ -519,6 +519,12 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET: flowzero-releases
           R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+          ALIYUN_OSS_ENDPOINT: oss-cn-beijing.aliyuncs.com
+          ALIYUN_OSS_REGION: cn-beijing
+          ALIYUN_OSS_BUCKET: flowzero-releases-cn
+          ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
 
       - name: Create Release (draft)
         uses: softprops/action-gh-release@v2
