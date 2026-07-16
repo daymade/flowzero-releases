@@ -23,6 +23,9 @@ jobs:
     steps:
       - name: Checkout release infrastructure
         uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
 
       - name: Verify channel manifest generator
         run: node --test .github/scripts/generate-update-channel-manifest.test.mjs

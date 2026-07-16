@@ -51,6 +51,17 @@ jobs:
           fi
           echo "::notice::version=${{ github.event_name == 'repository_dispatch' && github.event.client_payload.version || inputs.version }}"
 
+      - name: Checkout current release policy
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Reject permanently withdrawn versions
+        env:
+          RELEASE_TAG: v${{ steps.params.outputs.version }}
+        run: node .github/scripts/check-release-tombstone.mjs --tag "$RELEASE_TAG"
+
   # ============================================
   # macOS Build + Submit Signed DMG
   # ============================================
@@ -744,6 +755,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout current release policy
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Recheck withdrawn version policy before publication
+        env:
+          RELEASE_TAG: v${{ needs.prepare.outputs.version }}
+        run: node .github/scripts/check-release-tombstone.mjs --tag "$RELEASE_TAG"
+
       - name: Publish release (draft to live)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -767,6 +789,9 @@ jobs:
     steps:
       - name: Checkout release infrastructure
         uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
 
       - name: Verify channel manifest generator
         run: node --test .github/scripts/generate-update-channel-manifest.test.mjs

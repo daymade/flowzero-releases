@@ -10,7 +10,7 @@
 ![Platform](https://img.shields.io/badge/platform-macOS%20arm64%20%7C%20Windows%20x64-black)
 ![Signing](https://img.shields.io/badge/security-Developer%20ID%20%2B%20Notarized-success)
 
-- 当前测试版下载：https://updates-beta.flowzero.app/download
+- 测试版下载入口：https://updates-beta.flowzero.app/download
 - 历史版本与校验信息：https://github.com/daymade/flowzero-releases/releases
 - 问题反馈：https://github.com/daymade/flowzero-releases/issues
 
@@ -18,29 +18,29 @@
 
 本仓库记录签名版本并运行发布流水线。
 
-- 版本标签和每份二进制的归档副本在这里维护。
+- 已发布版本的标签和二进制归档在这里维护。主动撤回的版本会从分发链移除，并永久记录在[版本撤回 tombstone 权威表](.github/release-tombstones.json)。
 - 普通下载和自动更新使用当前通道明确选择的 Flowzero 发布源；发布流程会在正式发布前把同一份不可变产物写入全球 R2 镜像和北京 OSS 镜像。
 - macOS 与 Windows 的 GitHub draft 资产验收都通过后，CI 才将 draft 转为正式发布，生成不可变的通道快照并原子推进 R2 `current.json` 指针。Vercel 更新服务只读取这一个快照，再适配现有 macOS 与 Windows 更新协议。
 - 构建流程通过 GitHub Actions 执行。
 - 源码位于私有仓库中维护。
 
-## 平台支持现状
+## 发布资产契约
 
-| 平台 | 架构 | 状态 | 文件 |
-|---|---|---|---|
-| macOS | Apple Silicon (arm64) | 已提供 | `.dmg`、`.zip`、更新完整性元数据 |
-| Windows | x64 | 当该 tag 包含 Windows 产物时提供 | `Setup.exe`, `RELEASES`, `full.nupkg` |
+| 平台 | 架构 | 文件 |
+|---|---|---|
+| macOS | Apple Silicon (arm64) | `.dmg`、`.zip`、更新完整性元数据 |
+| Windows | x64 | `Setup.exe`, `RELEASES`, `full.nupkg` |
 
 ## 下载与安装（macOS）
 
-1. 下载当前 [Apple Silicon 测试版 DMG](https://updates-beta.flowzero.app/download/mac_arm64)。首个稳定版发布后，稳定通道下载入口才会启用。
+1. 打开 [Apple Silicon 测试版 DMG 入口](https://updates-beta.flowzero.app/download/mac_arm64)。通道没有已发布版本时返回 HTTP 404，不会自动选择另一通道或已撤回旧版本。
 2. 打开下载的 `.dmg`。
 3. 打开 DMG，将 `Flowzero.app` 拖入 `Applications`。
 4. 从 `Applications` 启动 Flowzero。
 
 ## 下载与安装（Windows）
 
-1. 下载当前 [Windows 测试版安装器](https://updates-beta.flowzero.app/download/windows)。首个稳定版发布后，稳定通道下载入口才会启用。
+1. 打开 [Windows 测试版安装器入口](https://updates-beta.flowzero.app/download/windows)。通道没有已发布版本时返回 HTTP 404，不会自动选择另一通道或已撤回旧版本。
 2. 运行安装器
 3. 从开始菜单或桌面快捷方式启动 Flowzero
 
@@ -80,9 +80,13 @@ shasum -a 256 Flowzero-*.zip
 
 `Beta` 版本会以 GitHub Pre-release 形式发布。
 
-通道尚无任何已发布版本时，可运行显式的 `Initialize Empty Update Channel`
-workflow 写入 `no_release` 快照；一旦该通道已有匹配的已发布版本，workflow
-会拒绝清空通道。
+通道没有匹配的已发布版本时——包括首个版本发布前和获准撤回后——可运行
+显式的 `Initialize Empty Update Channel` workflow 写入 `no_release` 快照；
+只要该通道仍有匹配的已发布版本，workflow 就会拒绝清空。
+
+撤回标签是[版本撤回 tombstone 权威表](.github/release-tombstones.json)中的
+不可变历史事实。标准发布、补镜像和频道提升路径都会永久拒绝这些标签；
+删除 GitHub Release 或 tag 不会让版本号重新可用。
 
 ## 常见问题
 

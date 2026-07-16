@@ -1,0 +1,25 @@
+{
+  "schema": "flowzero.withdrawn_release_tombstones.v1",
+  "releases": [
+    {
+      "tag": "v0.1.2-beta.4",
+      "withdrawn_on": "2026-07-17",
+      "reason": "internal_test_release_withdrawn"
+    },
+    {
+      "tag": "v0.1.2-beta.5",
+      "withdrawn_on": "2026-07-17",
+      "reason": "internal_test_release_withdrawn"
+    },
+    {
+      "tag": "v0.1.2-beta.6",
+      "withdrawn_on": "2026-07-17",
+      "reason": "internal_test_release_withdrawn"
+    },
+    {
+      "tag": "v0.1.2-beta.7",
+      "withdrawn_on": "2026-07-17",
+      "reason": "internal_test_release_withdrawn"
+    }
+  ]
+}

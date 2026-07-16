@@ -10,7 +10,7 @@ Official release repository for **Flowzero**.
 ![Platform](https://img.shields.io/badge/platform-macOS%20arm64%20%7C%20Windows%20x64-black)
 ![Signing](https://img.shields.io/badge/security-Developer%20ID%20%2B%20Notarized-success)
 
-- Current beta download: https://updates-beta.flowzero.app/download
+- Beta download endpoint: https://updates-beta.flowzero.app/download
 - Release archive and checksums: https://github.com/daymade/flowzero-releases/releases
 - Issue tracker: https://github.com/daymade/flowzero-releases/issues
 
@@ -18,29 +18,29 @@ Official release repository for **Flowzero**.
 
 This repository records signed releases and runs the release pipeline.
 
-- Release tags and an archival copy of every binary are hosted here.
+- Published release tags and their binary archives are hosted here. Intentionally withdrawn releases are removed from distribution and permanently recorded by the [release tombstone policy](.github/release-tombstones.json).
 - Normal downloads and automatic updates use the channel-configured Flowzero release origin. The public release workflow writes the same immutable objects to the global R2 mirror and the Beijing OSS mirror before publishing.
 - After both GitHub draft asset verification jobs pass, CI publishes the release, generates an immutable channel snapshot, and atomically advances the R2 `current.json` pointer. The Vercel update service reads that single snapshot and adapts it to the existing macOS and Windows update protocols.
 - Build pipeline runs in GitHub Actions.
 - Source code is maintained in a private repository.
 
-## Platform Availability
+## Release Asset Contract
 
-| Platform | Architecture | Status | Files |
-|---|---|---|---|
-| macOS | Apple Silicon (arm64) | Available | `.dmg`, `.zip`, updater integrity metadata |
-| Windows | x64 | Published when the release tag includes Windows assets | `Setup.exe`, `RELEASES`, `full.nupkg` |
+| Platform | Architecture | Files |
+|---|---|---|
+| macOS | Apple Silicon (arm64) | `.dmg`, `.zip`, updater integrity metadata |
+| Windows | x64 | `Setup.exe`, `RELEASES`, `full.nupkg` |
 
 ## Download & Install (macOS)
 
-1. Download the current [Apple Silicon beta DMG](https://updates-beta.flowzero.app/download/mac_arm64). The stable endpoint becomes active with the first stable release.
+1. Open the [Apple Silicon beta DMG endpoint](https://updates-beta.flowzero.app/download/mac_arm64). A channel with no published release returns HTTP 404 instead of selecting another channel or an older withdrawn build.
 2. Open the downloaded `.dmg`.
 3. Open the DMG and drag `Flowzero.app` into `Applications`.
 4. Launch Flowzero from `Applications`.
 
 ## Download & Install (Windows)
 
-1. Download the current [Windows beta installer](https://updates-beta.flowzero.app/download/windows). The stable endpoint becomes active with the first stable release.
+1. Open the [Windows beta installer endpoint](https://updates-beta.flowzero.app/download/windows). A channel with no published release returns HTTP 404 instead of selecting another channel or an older withdrawn build.
 2. Run the installer.
 3. Launch Flowzero from the Start menu or desktop shortcut.
 
@@ -80,9 +80,15 @@ Then compare with the checksum shown in the corresponding GitHub Release asset d
 
 `Beta` releases are published as GitHub Pre-releases.
 
-Before a channel has its first published release, the explicit
-`Initialize Empty Update Channel` workflow may publish a `no_release` snapshot.
-It refuses to clear a channel once a matching published release exists.
+When a channel has no matching published release—before its first release or
+after an authorized withdrawal—the explicit `Initialize Empty Update Channel`
+workflow publishes a `no_release` snapshot. It refuses to clear a channel while
+a matching published release still exists.
+
+Withdrawn tags are immutable historical facts in the
+[release tombstone policy](.github/release-tombstones.json). Standard release,
+mirror, and channel-promotion paths reject them permanently; deleting a GitHub
+Release or tag never makes its version reusable.
 
 ## FAQ
 

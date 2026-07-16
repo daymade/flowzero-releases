@@ -94,6 +94,10 @@ runs:
             exit 1
           fi
 
+          node \
+            "$GITHUB_ACTION_PATH/../../scripts/check-release-tombstone.mjs" \
+            --tag "$RELEASE_TAG"
+
           gh api \
             "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
             > "$WORK_DIR/release.json"

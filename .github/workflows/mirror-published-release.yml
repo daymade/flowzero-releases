@@ -34,6 +34,14 @@ jobs:
     steps:
       - name: Checkout release infrastructure
         uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Reject permanently withdrawn versions
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: node .github/scripts/check-release-tombstone.mjs --tag "$RELEASE_TAG"
 
       - name: Download the published release manifest
         if: ${{ inputs.mirror_assets }}
