@@ -178,6 +178,7 @@ runs:
               --bucket "$ALIYUN_OSS_BUCKET" \
               --key "$OBJECT_KEY" \
               --output-format json \
+              --quiet \
               "${OSSUTIL_ARGS[@]}" 2>/dev/null
           )"; then
             OSS_EXISTING_SIZE="$(jq -r '.Header["Content-Length"][0] // empty' <<<"$OSS_HEAD_JSON")"
@@ -203,6 +204,7 @@ runs:
               --bucket "$ALIYUN_OSS_BUCKET" \
               --key "$OBJECT_KEY" \
               --output-format json \
+              --quiet \
               "${OSSUTIL_ARGS[@]}"
           )"
           OSS_REMOTE_SIZE="$(jq -r '.Header["Content-Length"][0] // empty' <<<"$OSS_HEAD_JSON")"
