@@ -10,14 +10,16 @@
 ![Platform](https://img.shields.io/badge/platform-macOS%20arm64%20%7C%20Windows%20x64-black)
 ![Signing](https://img.shields.io/badge/security-Developer%20ID%20%2B%20Notarized-success)
 
-- 下载入口：https://github.com/daymade/flowzero-releases/releases
+- 当前测试版下载：https://updates-beta.flowzero.app/download
+- 历史版本与校验信息：https://github.com/daymade/flowzero-releases/releases
 - 问题反馈：https://github.com/daymade/flowzero-releases/issues
 
 ## 仓库定位
 
-本仓库用于发布面向最终用户的签名安装包。
+本仓库记录签名版本并运行发布流水线。
 
-- 发布二进制与版本标签在这里维护。
+- 版本标签和每份二进制的归档副本在这里维护。
+- 普通下载和自动更新统一使用 Flowzero 发布镜像。
 - 构建流程通过 GitHub Actions 执行。
 - 源码位于私有仓库中维护。
 
@@ -30,16 +32,14 @@
 
 ## 下载与安装（macOS）
 
-1. 打开 [Releases](https://github.com/daymade/flowzero-releases/releases) 页面。
-2. 下载最新 `.dmg`（推荐）。
+1. 下载当前 [Apple Silicon 测试版 DMG](https://updates-beta.flowzero.app/download/mac_arm64)。首个稳定版发布后，稳定通道下载入口才会启用。
+2. 打开下载的 `.dmg`。
 3. 打开 DMG，将 `Flowzero.app` 拖入 `Applications`。
 4. 从 `Applications` 启动 Flowzero。
 
 ## 下载与安装（Windows）
 
-如果某个 release tag 带有 Windows 产物：
-
-1. 下载最新的 `Flowzero-*-Setup.exe`
+1. 下载当前 [Windows 测试版安装器](https://updates-beta.flowzero.app/download/windows)。首个稳定版发布后，稳定通道下载入口才会启用。
 2. 运行安装器
 3. 从开始菜单或桌面快捷方式启动 Flowzero
 
@@ -68,7 +68,7 @@ shasum -a 256 Flowzero-*.dmg
 shasum -a 256 Flowzero-*.zip
 ```
 
-再与对应 GitHub Release 的资产详情/API 中展示的 checksum 对比。
+再与对应 GitHub Release 的资产详情/API 中展示的 checksum 对比。镜像与 GitHub 归档在发布前由 CI 对同一份产物完成校验。
 
 ## 发布通道
 
@@ -85,7 +85,7 @@ shasum -a 256 Flowzero-*.zip
 
 1. 确认应用通道（`stable` / `beta`）与版本标签一致。
 2. 检查是否可访问更新服务器。
-3. 如有需要，先从 Releases 页面手动下载安装最新版本。
+3. 打开上方对应通道的直接下载链接并安装当前版本。
 
 ### 这是开源仓库吗？
 
@@ -101,6 +101,7 @@ https://github.com/daymade/flowzero-releases/issues
 
 - 发布版本由 GitHub Actions 构建。
 - 发布产物由 CI 流程上传。
+- GitHub release draft 创建前，CI 会先镜像并验证完整发布清单。
 - macOS 产物在发布前完成签名与公证。
 - Windows 产物由 public release workflow 构建，在发布前完成 installer smoke，并在该 tag 启用 Windows lane 时与 macOS 产物一起发布。
 

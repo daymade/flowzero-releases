@@ -416,6 +416,9 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout release infrastructure
+        uses: actions/checkout@v4
+
       # Stage 1 intentionally retains an unstapled DMG with the same basename as
       # the final DMG. Only final artifacts may enter the release upload tree.
       - name: Download final macOS release artifacts
@@ -483,10 +486,29 @@ jobs:
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           if [[ "$VERSION" == *"-beta"* ]] || [[ "$VERSION" == *"-alpha"* ]]; then
-            echo "prerelease=true" >> $GITHUB_OUTPUT
+            {
+              echo "prerelease=true"
+              echo "download_base=https://updates-beta.flowzero.app"
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "prerelease=false" >> $GITHUB_OUTPUT
+            {
+              echo "prerelease=false"
+              echo "download_base=https://updates.flowzero.app"
+            } >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Mirror and verify final release assets
+        uses: ./.github/actions/mirror-release-assets
+        with:
+          asset-root: artifacts
+          release-tag: v${{ needs.prepare.outputs.version }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+          R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
 
       - name: Create Release (draft)
         uses: softprops/action-gh-release@v2
@@ -502,8 +524,8 @@ jobs:
 
             | Platform | Architecture | File |
             |----------|--------------|------|
-            | macOS | Apple Silicon (arm64) | `Flowzero-*-arm64.dmg` |
-            | Windows | x64 | `Flowzero-*-Setup.exe` |
+            | macOS | Apple Silicon (arm64) | [Download DMG](${{ steps.release_type.outputs.download_base }}/download/mac_arm64) |
+            | Windows | x64 | [Download installer](${{ steps.release_type.outputs.download_base }}/download/windows) |
 
             ### Auto-Update
 

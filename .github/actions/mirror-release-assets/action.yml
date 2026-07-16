@@ -1,0 +1,103 @@
+name: Mirror Flowzero release assets
+description: Uploads the exact release manifest to R2 and verifies private and public reads
+
+inputs:
+  asset-root:
+    description: Directory containing only the final release assets
+    required: true
+  release-tag:
+    description: Immutable GitHub release tag used as the mirror key prefix
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Upload and verify mirrored assets
+      shell: bash
+      env:
+        ASSET_ROOT: ${{ inputs.asset-root }}
+        RELEASE_TAG: ${{ inputs.release-tag }}
+      run: |
+        set -euo pipefail
+
+        for REQUIRED_ENV in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET R2_PUBLIC_BASE_URL; do
+          if [[ -z "${!REQUIRED_ENV:-}" ]]; then
+            echo "::error::Missing required mirror configuration: $REQUIRED_ENV"
+            exit 1
+          fi
+        done
+
+        if ! command -v aws >/dev/null 2>&1; then
+          echo "::error::AWS CLI is required for R2 multipart uploads"
+          exit 1
+        fi
+
+        mapfile -d '' ASSET_FILES < <(find "$ASSET_ROOT" -type f -print0)
+        if [[ ${#ASSET_FILES[@]} -ne 5 ]]; then
+          echo "::error::Mirror input must contain the exact five-file release manifest"
+          find "$ASSET_ROOT" -type f | sort
+          exit 1
+        fi
+
+        for FILE in "${ASSET_FILES[@]}"; do
+          ASSET_NAME="$(basename "$FILE")"
+          OBJECT_KEY="releases/$RELEASE_TAG/$ASSET_NAME"
+          LOCAL_SIZE="$(stat -c '%s' "$FILE")"
+          LOCAL_SHA256="$(sha256sum "$FILE" | awk '{print $1}')"
+
+          case "$ASSET_NAME" in
+            *.dmg) CONTENT_TYPE='application/x-apple-diskimage' ;;
+            *.zip) CONTENT_TYPE='application/zip' ;;
+            *-Setup.exe) CONTENT_TYPE='application/vnd.microsoft.portable-executable' ;;
+            *.nupkg|RELEASES) CONTENT_TYPE='application/octet-stream' ;;
+            *)
+              echo "::error::Unexpected release asset: $ASSET_NAME"
+              exit 1
+              ;;
+          esac
+
+          aws s3 cp \
+            "$FILE" \
+            "s3://$R2_BUCKET/$OBJECT_KEY" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type "$CONTENT_TYPE" \
+            --cache-control 'public, max-age=31536000, immutable' \
+            --metadata "sha256=$LOCAL_SHA256" \
+            --only-show-errors
+
+          read -r REMOTE_SIZE REMOTE_SHA256 < <(
+            aws s3api head-object \
+              --bucket "$R2_BUCKET" \
+              --key "$OBJECT_KEY" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --query '[ContentLength,Metadata.sha256]' \
+              --output text
+          )
+          if [[ "$REMOTE_SIZE" != "$LOCAL_SIZE" || "$REMOTE_SHA256" != "$LOCAL_SHA256" ]]; then
+            echo "::error::R2 object verification failed for $ASSET_NAME"
+            exit 1
+          fi
+
+          PUBLIC_URL="$R2_PUBLIC_BASE_URL/$OBJECT_KEY"
+          RANGE_FILE="$RUNNER_TEMP/flowzero-r2-range-$RANDOM"
+          HTTP_CODE="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --retry 12 \
+              --retry-all-errors \
+              --retry-delay 5 \
+              --range 0-0 \
+              --output "$RANGE_FILE" \
+              --write-out '%{http_code}' \
+              "$PUBLIC_URL"
+          )"
+          if [[ "$HTTP_CODE" != '206' || "$(stat -c '%s' "$RANGE_FILE")" != '1' ]]; then
+            echo "::error::Public mirror range verification failed for $ASSET_NAME (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+          rm "$RANGE_FILE"
+
+          echo "Mirrored and verified $ASSET_NAME ($LOCAL_SIZE bytes, sha256=$LOCAL_SHA256)"
+        done

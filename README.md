@@ -10,14 +10,16 @@ Official release repository for **Flowzero**.
 ![Platform](https://img.shields.io/badge/platform-macOS%20arm64%20%7C%20Windows%20x64-black)
 ![Signing](https://img.shields.io/badge/security-Developer%20ID%20%2B%20Notarized-success)
 
-- Download page: https://github.com/daymade/flowzero-releases/releases
+- Current beta download: https://updates-beta.flowzero.app/download
+- Release archive and checksums: https://github.com/daymade/flowzero-releases/releases
 - Issue tracker: https://github.com/daymade/flowzero-releases/issues
 
 ## What This Repository Is
 
-This repository publishes signed release artifacts for end users.
+This repository records signed releases and runs the release pipeline.
 
-- Release binaries and tags are hosted here.
+- Release tags and an archival copy of every binary are hosted here.
+- Normal downloads and automatic updates use the Flowzero release mirror.
 - Build pipeline runs in GitHub Actions.
 - Source code is maintained in a private repository.
 
@@ -30,16 +32,14 @@ This repository publishes signed release artifacts for end users.
 
 ## Download & Install (macOS)
 
-1. Open the [Releases](https://github.com/daymade/flowzero-releases/releases) page.
-2. Download the latest `.dmg` (recommended).
+1. Download the current [Apple Silicon beta DMG](https://updates-beta.flowzero.app/download/mac_arm64). The stable endpoint becomes active with the first stable release.
+2. Open the downloaded `.dmg`.
 3. Open the DMG and drag `Flowzero.app` into `Applications`.
 4. Launch Flowzero from `Applications`.
 
 ## Download & Install (Windows)
 
-If a release tag includes Windows assets:
-
-1. Download the latest `Flowzero-*-Setup.exe`.
+1. Download the current [Windows beta installer](https://updates-beta.flowzero.app/download/windows). The stable endpoint becomes active with the first stable release.
 2. Run the installer.
 3. Launch Flowzero from the Start menu or desktop shortcut.
 
@@ -68,7 +68,7 @@ shasum -a 256 Flowzero-*.dmg
 shasum -a 256 Flowzero-*.zip
 ```
 
-Then compare with the checksum shown in the corresponding GitHub Release asset details/API response.
+Then compare with the checksum shown in the corresponding GitHub Release asset details/API response. The mirror and GitHub archive are verified from the same CI artifact before publication.
 
 ## Release Channels
 
@@ -85,7 +85,7 @@ Then compare with the checksum shown in the corresponding GitHub Release asset d
 
 1. Confirm your app channel (`stable` / `beta`) matches the release tag.
 2. Check network access to the update server.
-3. Download and install from Releases manually if needed.
+3. Open the channel's direct download link above and install the current package.
 
 ### Is this repo open source?
 
@@ -101,6 +101,7 @@ https://github.com/daymade/flowzero-releases/issues
 
 - Releases are built by GitHub Actions.
 - Published artifacts are uploaded from CI jobs.
+- The exact release manifest is mirrored and verified before the GitHub release draft is created.
 - macOS artifacts are signed and notarized before publishing.
 - Windows artifacts are built in the public release workflow, installer-smoke tested, and published alongside macOS assets when the tag includes the Windows lane.
 
