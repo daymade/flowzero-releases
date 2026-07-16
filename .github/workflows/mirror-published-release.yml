@@ -18,6 +18,11 @@ on:
         required: true
         type: boolean
         default: false
+      mirror_assets:
+        description: 'Re-download and verify all binary mirrors before promotion'
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -31,6 +36,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download the published release manifest
+        if: ${{ inputs.mirror_assets }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
@@ -43,6 +49,7 @@ jobs:
             --dir artifacts/published-release
 
       - name: Mirror and verify published assets
+        if: ${{ inputs.mirror_assets }}
         uses: ./.github/actions/mirror-release-assets
         with:
           asset-root: artifacts/published-release
