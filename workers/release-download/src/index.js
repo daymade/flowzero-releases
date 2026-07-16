@@ -1,17 +1,29 @@
 const RELEASE_KEY_PATTERN = /^releases\/v[0-9A-Za-z.+-]+\/[^/]+$/;
+const IMMUTABLE_CHANNEL_KEY_PATTERN =
+  /^channels\/(stable|beta)\/releases\/v[0-9A-Za-z.+-]+\.json$/;
+const CURRENT_CHANNEL_KEY_PATTERN =
+  /^channels\/(stable|beta)\/current\.json$/;
 
-function responseHeaders(object, contentLength) {
+function defaultCacheControl(key) {
+  return CURRENT_CHANNEL_KEY_PATTERN.test(key)
+    ? 'public, max-age=0, must-revalidate, stale-if-error=86400'
+    : 'public, max-age=31536000, immutable';
+}
+
+function responseHeaders(object, contentLength, key) {
   const headers = new Headers();
   object.writeHttpMetadata(headers);
   headers.set('Accept-Ranges', 'bytes');
-  headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+  if (!headers.has('Cache-Control')) {
+    headers.set('Cache-Control', defaultCacheControl(key));
+  }
   headers.set('Content-Length', String(contentLength));
   headers.set('ETag', object.httpEtag);
   headers.set('X-Content-Type-Options', 'nosniff');
   return headers;
 }
 
-function parseReleaseKey(requestUrl) {
+function parseObjectKey(requestUrl) {
   const encodedPath = new URL(requestUrl).pathname.replace(/^\/+/, '');
   let key;
 
@@ -21,7 +33,11 @@ function parseReleaseKey(requestUrl) {
     return null;
   }
 
-  if (!RELEASE_KEY_PATTERN.test(key) || key.includes('\\') || key.includes('\0')) {
+  const isAllowedKey =
+    RELEASE_KEY_PATTERN.test(key)
+    || IMMUTABLE_CHANNEL_KEY_PATTERN.test(key)
+    || CURRENT_CHANNEL_KEY_PATTERN.test(key);
+  if (!isAllowedKey || key.includes('\\') || key.includes('\0')) {
     return null;
   }
 
@@ -61,13 +77,15 @@ export async function handleRequest(request, env) {
     });
   }
 
-  const key = parseReleaseKey(request.url);
+  const key = parseObjectKey(request.url);
   if (!key) return notFound();
 
   if (request.method === 'HEAD') {
     const object = await env.RELEASES.head(key);
     if (!object) return notFound();
-    return new Response(null, { headers: responseHeaders(object, object.size) });
+    return new Response(null, {
+      headers: responseHeaders(object, object.size, key),
+    });
   }
 
   const rangeHeader = request.headers.get('Range');
@@ -86,7 +104,7 @@ export async function handleRequest(request, env) {
     const object = await env.RELEASES.get(key, { range });
     if (!object) return notFound();
 
-    const headers = responseHeaders(object, range.length);
+    const headers = responseHeaders(object, range.length, key);
     headers.set(
       'Content-Range',
       `bytes ${range.offset}-${range.offset + range.length - 1}/${metadata.size}`,
@@ -97,7 +115,7 @@ export async function handleRequest(request, env) {
   const object = await env.RELEASES.get(key);
   if (!object) return notFound();
   return new Response(object.body, {
-    headers: responseHeaders(object, object.size),
+    headers: responseHeaders(object, object.size, key),
   });
 }
 
