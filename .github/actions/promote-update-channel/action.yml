@@ -158,41 +158,6 @@ runs:
             --expected-immutable true \
             --output "$WORK_DIR/release-asset-identity.json"
           gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null
-          while IFS=$'\t' read -r ASSET_NAME ASSET_SIZE ASSET_SHA256; do
-            read -r R2_SIZE R2_SHA256 < <(
-              aws s3api head-object \
-                --bucket "$R2_BUCKET" \
-                --key "releases/$RELEASE_TAG/$ASSET_NAME" \
-                --endpoint-url "$R2_ENDPOINT" \
-                --query '[ContentLength,Metadata.sha256]' \
-                --output text
-            )
-            if [[ "$R2_SIZE" != "$ASSET_SIZE" || "$R2_SHA256" != "$ASSET_SHA256" ]]; then
-              echo "::error::Published GitHub asset does not match immutable R2 evidence: $ASSET_NAME"
-              exit 1
-            fi
-            R2_PUBLIC_READBACK="$WORK_DIR/tinkle_r2-public-readback-$RANDOM"
-            OSS_PUBLIC_READBACK="$WORK_DIR/tinkle_oss-public-readback-$RANDOM"
-            curl --fail --silent --show-error --location --retry 4 --retry-all-errors \
-              "${R2_PUBLIC_BASE_URL%/}/releases/$RELEASE_TAG/$ASSET_NAME" \
-              --output "$R2_PUBLIC_READBACK"
-            curl --fail --silent --show-error --location --retry 4 --retry-all-errors \
-              "${ALIYUN_OSS_PUBLIC_BASE_URL%/}/releases/$RELEASE_TAG/$ASSET_NAME" \
-              --output "$OSS_PUBLIC_READBACK"
-            R2_PUBLIC_SIZE="$(stat -c '%s' "$R2_PUBLIC_READBACK")"
-            OSS_PUBLIC_SIZE="$(stat -c '%s' "$OSS_PUBLIC_READBACK")"
-            R2_PUBLIC_SHA256="$(sha256sum "$R2_PUBLIC_READBACK" | awk '{print $1}')"
-            OSS_PUBLIC_SHA256="$(sha256sum "$OSS_PUBLIC_READBACK" | awk '{print $1}')"
-            rm -f "$R2_PUBLIC_READBACK" "$OSS_PUBLIC_READBACK"
-            if [[ "$R2_PUBLIC_SIZE" != "$ASSET_SIZE" || "$R2_PUBLIC_SHA256" != "$ASSET_SHA256" ]]; then
-              echo "::error::Published GitHub asset does not match public R2 bytes: $ASSET_NAME"
-              exit 1
-            fi
-            if [[ "$OSS_PUBLIC_SIZE" != "$ASSET_SIZE" || "$OSS_PUBLIC_SHA256" != "$ASSET_SHA256" ]]; then
-              echo "::error::Published GitHub asset does not match public OSS bytes: $ASSET_NAME"
-              exit 1
-            fi
-          done < <(jq -r '.assets[] | [.name, (.size | tostring), .sha256] | @tsv' "$WORK_DIR/release-asset-identity.json")
 
           CHANNEL_VERSION_ARGS=(
             --channel "$UPDATE_CHANNEL"
@@ -307,6 +272,44 @@ runs:
           --retry-delay 5 \
           "$IMMUTABLE_URL" \
           | sha256sum --check <(printf '%s  -\n' "$MANIFEST_SHA256")
+
+        if [[ "$RELEASE_TAG" != 'no_release' ]]; then
+          while IFS=$'\t' read -r ASSET_NAME ASSET_SIZE ASSET_SHA256; do
+            read -r R2_SIZE R2_SHA256 < <(
+              aws s3api head-object \
+                --bucket "$R2_BUCKET" \
+                --key "releases/$RELEASE_TAG/$ASSET_NAME" \
+                --endpoint-url "$R2_ENDPOINT" \
+                --query '[ContentLength,Metadata.sha256]' \
+                --output text
+            )
+            if [[ "$R2_SIZE" != "$ASSET_SIZE" || "$R2_SHA256" != "$ASSET_SHA256" ]]; then
+              echo "::error::Published GitHub asset does not match immutable R2 evidence immediately before channel CAS: $ASSET_NAME"
+              exit 1
+            fi
+            R2_PUBLIC_READBACK="$WORK_DIR/tinkle_r2-public-readback-$RANDOM"
+            OSS_PUBLIC_READBACK="$WORK_DIR/tinkle_oss-public-readback-$RANDOM"
+            curl --fail --silent --show-error --location --retry 4 --retry-all-errors \
+              "${R2_PUBLIC_BASE_URL%/}/releases/$RELEASE_TAG/$ASSET_NAME" \
+              --output "$R2_PUBLIC_READBACK"
+            curl --fail --silent --show-error --location --retry 4 --retry-all-errors \
+              "${ALIYUN_OSS_PUBLIC_BASE_URL%/}/releases/$RELEASE_TAG/$ASSET_NAME" \
+              --output "$OSS_PUBLIC_READBACK"
+            R2_PUBLIC_SIZE="$(stat -c '%s' "$R2_PUBLIC_READBACK")"
+            OSS_PUBLIC_SIZE="$(stat -c '%s' "$OSS_PUBLIC_READBACK")"
+            R2_PUBLIC_SHA256="$(sha256sum "$R2_PUBLIC_READBACK" | awk '{print $1}')"
+            OSS_PUBLIC_SHA256="$(sha256sum "$OSS_PUBLIC_READBACK" | awk '{print $1}')"
+            rm -f "$R2_PUBLIC_READBACK" "$OSS_PUBLIC_READBACK"
+            if [[ "$R2_PUBLIC_SIZE" != "$ASSET_SIZE" || "$R2_PUBLIC_SHA256" != "$ASSET_SHA256" ]]; then
+              echo "::error::Published GitHub asset does not match public R2 bytes immediately before channel CAS: $ASSET_NAME"
+              exit 1
+            fi
+            if [[ "$OSS_PUBLIC_SIZE" != "$ASSET_SIZE" || "$OSS_PUBLIC_SHA256" != "$ASSET_SHA256" ]]; then
+              echo "::error::Published GitHub asset does not match public OSS bytes immediately before channel CAS: $ASSET_NAME"
+              exit 1
+            fi
+          done < <(jq -r '.assets[] | [.name, (.size | tostring), .sha256] | @tsv' "$WORK_DIR/release-asset-identity.json")
+        fi
 
         CURRENT_CONDITION_ARGS=()
         if [[ "$CURRENT_EXISTS" == 'true' ]]; then

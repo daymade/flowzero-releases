@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -388,9 +389,13 @@ test('manual dispatch always executes privileged release infrastructure from mai
     assert.ok(start >= 0 && end > start, `missing job block: ${jobName}`);
     assert.match(
       workflow.slice(start, end),
-      /- name: Checkout release infrastructure\n\s+uses: actions\/checkout@v\d+\n\s+with:\n\s+ref: main\n\s+persist-credentials: false/u,
+      /- name: Checkout release infrastructure\n\s+uses: actions\/checkout@v7\n\s+with:\n\s+ref: main\n\s+persist-credentials: false/u,
     );
   }
+  const checkoutVersions = [...workflow.matchAll(/actions\/checkout@(v\d+)/gu)]
+    .map((match) => match[1]);
+  assert.ok(checkoutVersions.length > 0);
+  assert.deepEqual([...new Set(checkoutVersions)], ['v7']);
 });
 
 test('channel CAS requires contemporaneous full public bytes from both mirrors', async () => {
@@ -399,16 +404,310 @@ test('channel CAS requires contemporaneous full public bytes from both mirrors',
     readFile(new URL('../workflows/release.yml', import.meta.url), 'utf8'),
     readFile(new URL('../workflows/mirror-published-release.yml', import.meta.url), 'utf8'),
   ]);
-  const r2Readback = action.indexOf('${R2_PUBLIC_BASE_URL%/}/releases/$RELEASE_TAG/$ASSET_NAME');
-  const ossReadback = action.indexOf('${ALIYUN_OSS_PUBLIC_BASE_URL%/}/releases/$RELEASE_TAG/$ASSET_NAME');
+  const immutableReadback = action.indexOf('"$IMMUTABLE_URL"');
+  const r2Readback = action.lastIndexOf('${R2_PUBLIC_BASE_URL%/}/releases/$RELEASE_TAG/$ASSET_NAME');
+  const ossReadback = action.lastIndexOf('${ALIYUN_OSS_PUBLIC_BASE_URL%/}/releases/$RELEASE_TAG/$ASSET_NAME');
   const currentPut = action.indexOf('--key "$CURRENT_KEY"', ossReadback);
+  assert.ok(immutableReadback >= 0);
+  assert.ok(r2Readback > immutableReadback);
   assert.ok(r2Readback >= 0);
   assert.ok(ossReadback > r2Readback);
   assert.ok(currentPut > ossReadback);
+  assert.doesNotMatch(
+    action.slice(ossReadback, currentPut),
+    /gh release download|generate-update-channel-manifest|--key "\$IMMUTABLE_KEY"/u,
+  );
   assert.match(action, /Published GitHub asset does not match public R2 bytes/u);
   assert.match(action, /Published GitHub asset does not match public OSS bytes/u);
   assert.match(release, /Promote verified release[\s\S]*ALIYUN_OSS_PUBLIC_BASE_URL:/u);
   assert.match(mirror, /Promote mirrored release[\s\S]*ALIYUN_OSS_PUBLIC_BASE_URL:/u);
+});
+
+test('the real promotion shell rejects either mirror changing after immutable snapshot verification', async () => {
+  const action = await readFile(
+    new URL('../actions/promote-update-channel/action.yml', import.meta.url),
+    'utf8',
+  );
+  const promoteScript = extractRunBlock(action, 'Generate and promote channel snapshot');
+  const repoRoot = path.resolve(new URL('../..', import.meta.url).pathname);
+  const tag = 'v0.1.2-beta.8';
+  const version = tag.slice(1);
+  const names = {
+    dmg: `Flowzero-darwin-arm64-${version}.dmg`,
+    zip: `Flowzero-darwin-arm64-${version}.zip`,
+    setup: `Flowzero-${version}-Setup.exe`,
+    nupkg: `Flowzero-${version}-full.nupkg`,
+    releases: 'RELEASES',
+    macIntegrity: 'mac-update-integrity.json',
+  };
+  const hash = (algorithm, value, encoding = 'hex') => (
+    createHash(algorithm).update(value).digest(encoding)
+  );
+
+  async function runCase(mutateOrigin) {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'tinkle_flowzero-promote-cas-'));
+    const assetRoot = path.join(root, 'tinkle_assets');
+    const r2PublicRoot = path.join(root, 'tinkle_r2-public');
+    const ossPublicRoot = path.join(root, 'tinkle_oss-public');
+    const storeRoot = path.join(root, 'tinkle_store');
+    const casLog = path.join(root, 'tinkle_cas.log');
+    const mutationLog = path.join(root, 'tinkle_mutation.log');
+    const releasePath = path.join(root, 'tinkle_release.json');
+    const ledgerPath = path.join(root, 'tinkle_ledger.json');
+    const fakeGhPath = path.join(root, 'tinkle_fake_gh.cjs');
+    const fakeAwsPath = path.join(root, 'tinkle_fake_aws.cjs');
+    const fakeCurlPath = path.join(root, 'tinkle_fake_curl.cjs');
+    const bashEnvPath = path.join(root, 'tinkle_fake_commands.sh');
+
+    try {
+      await Promise.all([
+        mkdir(assetRoot, { recursive: true }),
+        mkdir(r2PublicRoot, { recursive: true }),
+        mkdir(ossPublicRoot, { recursive: true }),
+        mkdir(storeRoot, { recursive: true }),
+      ]);
+      const rawAssets = new Map([
+        [names.dmg, Buffer.from('dmg-bytes')],
+        [names.zip, Buffer.from('zip-bytes')],
+        [names.setup, Buffer.from('setup-bytes')],
+        [names.nupkg, Buffer.from('nupkg-bytes')],
+      ]);
+      const nupkg = rawAssets.get(names.nupkg);
+      rawAssets.set(
+        names.releases,
+        Buffer.from(`${hash('sha1', nupkg)} ${names.nupkg} ${nupkg.length}\n`),
+      );
+      rawAssets.set(
+        names.macIntegrity,
+        Buffer.from(`${JSON.stringify({
+          schema: 'flowzero.macos_update_integrity.v1',
+          version,
+          file: {
+            name: names.zip,
+            size: rawAssets.get(names.zip).length,
+            sha512: hash('sha512', rawAssets.get(names.zip), 'base64'),
+            sha256: hash('sha256', rawAssets.get(names.zip)),
+          },
+          dmg: {
+            name: names.dmg,
+            size: rawAssets.get(names.dmg).length,
+            sha256: hash('sha256', rawAssets.get(names.dmg)),
+          },
+        }, null, 2)}\n`),
+      );
+
+      for (const [name, bytes] of rawAssets) {
+        await Promise.all([
+          writeFile(path.join(assetRoot, name), bytes),
+          writeFile(path.join(r2PublicRoot, name), bytes),
+          writeFile(path.join(ossPublicRoot, name), bytes),
+        ]);
+      }
+      const contentTypes = {
+        [names.dmg]: 'application/x-apple-diskimage',
+        [names.zip]: 'application/zip',
+        [names.setup]: 'application/vnd.microsoft.portable-executable',
+        [names.nupkg]: 'application/octet-stream',
+        [names.releases]: 'text/plain',
+        [names.macIntegrity]: 'application/json',
+      };
+      const assets = [...rawAssets].map(([name, bytes]) => ({
+        name,
+        size: bytes.length,
+        state: 'uploaded',
+        digest: `sha256:${hash('sha256', bytes)}`,
+        content_type: contentTypes[name],
+      }));
+      await writeFile(releasePath, JSON.stringify({
+        id: 808,
+        tag_name: tag,
+        draft: false,
+        prerelease: true,
+        immutable: true,
+        published_at: '2026-08-24T00:00:00Z',
+        assets,
+      }), 'utf8');
+      await writeFile(ledgerPath, JSON.stringify(Object.fromEntries(assets.map((asset) => [
+        asset.name,
+        { size: asset.size, sha256: asset.digest.slice('sha256:'.length) },
+      ]))), 'utf8');
+
+      await writeFile(fakeGhPath, `
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+if (args[0] === 'release' && args[1] === 'verify') process.exit(0);
+if (args[0] === 'release' && args[1] === 'download') {
+  const pattern = args[args.indexOf('--pattern') + 1];
+  const outputDir = args[args.indexOf('--dir') + 1];
+  fs.mkdirSync(outputDir, { recursive: true });
+  fs.copyFileSync(path.join(process.env.TINKLE_ASSET_ROOT, pattern), path.join(outputDir, pattern));
+  process.exit(0);
+}
+if (args[0] === 'api') {
+  process.stdout.write(fs.readFileSync(process.env.TINKLE_RELEASE_JSON));
+  process.exit(0);
+}
+process.exit(90);
+`, 'utf8');
+      await writeFile(fakeAwsPath, `
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+const flag = (name) => args[args.indexOf(name) + 1];
+const key = flag('--key');
+const storePath = (objectKey) => path.join(process.env.TINKLE_STORE, ...objectKey.split('/'));
+const digest = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+if (args[0] !== 's3api') process.exit(91);
+if (args[1] === 'list-objects-v2') {
+  process.stdout.write(JSON.stringify({ Contents: [] }));
+  process.exit(0);
+}
+if (args[1] === 'head-object') {
+  if (key.startsWith('releases/')) {
+    const ledger = JSON.parse(fs.readFileSync(process.env.TINKLE_LEDGER, 'utf8'));
+    const item = ledger[path.basename(key)];
+    if (!item) process.exit(92);
+    process.stdout.write(String(item.size) + '\\t' + item.sha256 + '\\n');
+    process.exit(0);
+  }
+  const target = storePath(key);
+  if (!fs.existsSync(target)) process.exit(255);
+  const bytes = fs.readFileSync(target);
+  if (args.includes('--query')) process.stdout.write(String(bytes.length) + '\\t' + digest(bytes) + '\\n');
+  else process.stdout.write(JSON.stringify({ ContentLength: bytes.length, Metadata: { sha256: digest(bytes) }, ETag: '"fixture"' }));
+  process.exit(0);
+}
+if (args[1] === 'put-object') {
+  if (key === 'channels/beta/current.json') fs.appendFileSync(process.env.TINKLE_CAS_LOG, 'CAS\\n');
+  const target = storePath(key);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(flag('--body'), target);
+  process.stdout.write('{}');
+  process.exit(0);
+}
+process.exit(93);
+`, 'utf8');
+      await writeFile(fakeCurlPath, `
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+const urlArg = args.find((value) => /^https?:\\/\\//u.test(value));
+if (!urlArg) process.exit(95);
+const url = new URL(urlArg);
+const key = decodeURIComponent(url.pathname.replace(/^\\/+/, ''));
+const outputIndex = args.indexOf('--output');
+if (key.startsWith('channels/beta/releases/')) {
+  const origin = process.env.TINKLE_MUTATE_ORIGIN;
+  if (origin === 'r2' || origin === 'oss') {
+    const root = origin === 'r2' ? process.env.TINKLE_R2_PUBLIC : process.env.TINKLE_OSS_PUBLIC;
+    fs.writeFileSync(path.join(root, process.env.TINKLE_DMG_NAME), 'CORRUPTED-AFTER-IMMUTABLE-READBACK');
+    fs.writeFileSync(process.env.TINKLE_MUTATION_LOG, origin);
+  }
+  process.stdout.write(fs.readFileSync(path.join(process.env.TINKLE_STORE, ...key.split('/'))));
+  process.exit(0);
+}
+if (key.startsWith('releases/')) {
+  const root = url.hostname === 'oss.example' ? process.env.TINKLE_OSS_PUBLIC : process.env.TINKLE_R2_PUBLIC;
+  const source = path.join(root, path.basename(key));
+  if (outputIndex >= 0) fs.copyFileSync(source, args[outputIndex + 1]);
+  else process.stdout.write(fs.readFileSync(source));
+  process.exit(0);
+}
+if (key === 'channels/beta/current.json') {
+  process.stdout.write(fs.readFileSync(path.join(process.env.TINKLE_STORE, ...key.split('/'))));
+  process.exit(0);
+}
+process.exit(96);
+`, 'utf8');
+      await writeFile(bashEnvPath, `
+stat() {
+  if [[ "$1" == '-c' && "$2" == '%s' ]]; then
+    node -e 'console.log(require("node:fs").statSync(process.argv[1]).size)' "$3"
+  else
+    command stat "$@"
+  fi
+}
+sha256sum() {
+  if [[ "$1" == '--check' ]]; then
+    node -e '
+      const crypto = require("node:crypto");
+      const fs = require("node:fs");
+      const expected = fs.readFileSync(process.argv[1], "utf8").trim().split(/\\s+/u)[0];
+      const actual = crypto.createHash("sha256").update(fs.readFileSync(0)).digest("hex");
+      if (actual !== expected) process.exit(1);
+      process.stdout.write("-: OK\\n");
+    ' "$2"
+  else
+    command sha256sum "$@"
+  fi
+}
+gh() { node "$TINKLE_FAKE_GH" "$@"; }
+aws() { node "$TINKLE_FAKE_AWS" "$@"; }
+curl() { node "$TINKLE_FAKE_CURL" "$@"; }
+`, 'utf8');
+
+      const result = spawnSync('bash', ['-c', promoteScript], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          BASH_ENV: bashEnvPath,
+          GH_TOKEN: 'fixture-token',
+          AWS_ACCESS_KEY_ID: 'fixture-access',
+          AWS_SECRET_ACCESS_KEY: 'fixture-secret',
+          AWS_DEFAULT_REGION: 'auto',
+          R2_ENDPOINT: 'https://fixture.r2.example',
+          R2_BUCKET: 'fixture-bucket',
+          R2_PUBLIC_BASE_URL: 'https://r2.example',
+          ALIYUN_OSS_PUBLIC_BASE_URL: 'https://oss.example',
+          GITHUB_REPOSITORY: 'daymade/flowzero-releases',
+          GITHUB_ACTION_PATH: path.join(repoRoot, '.github', 'actions', 'promote-update-channel'),
+          RUNNER_TEMP: root,
+          RELEASE_TAG: tag,
+          CHANNEL_STATE: 'published',
+          UPDATE_CHANNEL: 'beta',
+          ALLOW_DOWNGRADE: 'false',
+          TINKLE_ASSET_ROOT: assetRoot,
+          TINKLE_RELEASE_JSON: releasePath,
+          TINKLE_LEDGER: ledgerPath,
+          TINKLE_STORE: storeRoot,
+          TINKLE_R2_PUBLIC: r2PublicRoot,
+          TINKLE_OSS_PUBLIC: ossPublicRoot,
+          TINKLE_CAS_LOG: casLog,
+          TINKLE_MUTATION_LOG: mutationLog,
+          TINKLE_MUTATE_ORIGIN: mutateOrigin,
+          TINKLE_DMG_NAME: names.dmg,
+          TINKLE_FAKE_GH: fakeGhPath,
+          TINKLE_FAKE_AWS: fakeAwsPath,
+          TINKLE_FAKE_CURL: fakeCurlPath,
+        },
+      });
+      const readOptional = async (filePath) => readFile(filePath, 'utf8').catch((error) => (
+        error.code === 'ENOENT' ? '' : Promise.reject(error)
+      ));
+      const cas = await readOptional(casLog);
+      if (mutateOrigin === 'none') {
+        assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+        assert.equal(cas, 'CAS\n');
+      } else {
+        assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
+        assert.equal(await readFile(mutationLog, 'utf8'), mutateOrigin);
+        assert.equal(cas, '', `current.json CAS occurred after ${mutateOrigin} mutation`);
+        assert.match(
+          `${result.stdout}\n${result.stderr}`,
+          new RegExp(`public ${mutateOrigin.toUpperCase()} bytes immediately before channel CAS`, 'u'),
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  for (const mutateOrigin of ['none', 'r2', 'oss']) {
+    await runCase(mutateOrigin);
+  }
 });
 
 test('immutable channel snapshots are conditional while current.json remains the sole mutable pointer', async () => {
