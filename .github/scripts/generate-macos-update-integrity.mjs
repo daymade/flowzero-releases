@@ -2,9 +2,10 @@
 
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 export const SCHEMA = 'flowzero.macos_update_integrity.v1';
 
@@ -27,8 +28,8 @@ async function findFiles(root) {
   return files;
 }
 
-async function sha512Base64(filePath) {
-  const hash = createHash('sha512');
+async function hashFile(filePath, algorithm, encoding) {
+  const hash = createHash(algorithm);
   await new Promise((resolve, reject) => {
     createReadStream(filePath)
       .on('error', reject)
@@ -36,7 +37,7 @@ async function sha512Base64(filePath) {
       .pipe(hash, { end: false });
   });
   hash.end();
-  return hash.digest('base64');
+  return hash.digest(encoding);
 }
 
 export async function buildIntegrityManifest({ assetRoot, version }) {
@@ -46,30 +47,63 @@ export async function buildIntegrityManifest({ assetRoot, version }) {
 
   const files = await findFiles(assetRoot);
   const zipFiles = files.filter((filePath) => filePath.toLowerCase().endsWith('.zip'));
+  const dmgFiles = files.filter((filePath) => filePath.toLowerCase().endsWith('.dmg'));
   if (zipFiles.length !== 1) {
     throw new Error(`Expected exactly one macOS updater ZIP, found ${zipFiles.length}`);
   }
-
-  const zipPath = zipFiles[0];
-  const fileInfo = await stat(zipPath);
-  if (!fileInfo.isFile() || fileInfo.size <= 0) {
-    throw new Error(`macOS updater ZIP is empty or invalid: ${zipPath}`);
+  if (dmgFiles.length !== 1) {
+    throw new Error(`Expected exactly one macOS DMG, found ${dmgFiles.length}`);
   }
 
-  const fileName = path.basename(zipPath);
-  if (!fileName.includes(version)) {
-    throw new Error(`macOS updater ZIP name does not contain release version ${version}: ${fileName}`);
+  const zipPath = zipFiles[0];
+  const dmgPath = dmgFiles[0];
+  const zipInfo = await stat(zipPath);
+  const dmgInfo = await stat(dmgPath);
+  if (!zipInfo.isFile() || zipInfo.size <= 0) {
+    throw new Error(`macOS updater ZIP is empty or invalid: ${zipPath}`);
+  }
+  if (!dmgInfo.isFile() || dmgInfo.size <= 0) {
+    throw new Error(`macOS DMG is empty or invalid: ${dmgPath}`);
+  }
+
+  const zipName = path.basename(zipPath);
+  const dmgName = path.basename(dmgPath);
+  if (!zipName.includes(version)) {
+    throw new Error(`macOS updater ZIP name does not contain release version ${version}: ${zipName}`);
+  }
+  if (!dmgName.includes(version)) {
+    throw new Error(`macOS DMG name does not contain release version ${version}: ${dmgName}`);
   }
 
   return {
     schema: SCHEMA,
     version,
     file: {
-      name: fileName,
-      size: fileInfo.size,
-      sha512: await sha512Base64(zipPath),
+      name: zipName,
+      size: zipInfo.size,
+      sha512: await hashFile(zipPath, 'sha512', 'base64'),
+      sha256: await hashFile(zipPath, 'sha256', 'hex'),
+    },
+    dmg: {
+      name: dmgName,
+      size: dmgInfo.size,
+      sha256: await hashFile(dmgPath, 'sha256', 'hex'),
     },
   };
+}
+
+export async function verifyIntegrityManifest({ assetRoot, manifest }) {
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    throw new Error('macOS integrity manifest must be a JSON object');
+  }
+  if (manifest.schema !== SCHEMA) {
+    throw new Error(`Unsupported macOS integrity schema: ${String(manifest.schema)}`);
+  }
+  const actual = await buildIntegrityManifest({ assetRoot, version: manifest.version });
+  if (!isDeepStrictEqual(actual, manifest)) {
+    throw new Error('macOS release assets do not match mac-update-integrity.json');
+  }
+  return actual;
 }
 
 function parseArguments(argv) {
@@ -77,11 +111,22 @@ function parseArguments(argv) {
   for (let index = 0; index < argv.length; index += 2) {
     const key = argv[index];
     const value = argv[index + 1];
-    if (!['--asset-root', '--version', '--output'].includes(key) || !value) {
-      throw new Error('Usage: generate-macos-update-integrity --asset-root <dir> --version <semver> --output <file>');
+    if (!['--asset-root', '--version', '--output', '--manifest'].includes(key) || !value) {
+      throw new Error(
+        'Usage: generate-macos-update-integrity '
+        + '--asset-root <dir> (--version <semver> --output <file> | --manifest <file>)',
+      );
     }
     if (Object.hasOwn(values, key)) throw new Error(`Duplicate argument: ${key}`);
     values[key] = value;
+  }
+  if (!values['--asset-root']) throw new Error('Missing required argument: --asset-root');
+  const verifyMode = Boolean(values['--manifest']);
+  if (verifyMode && (values['--version'] || values['--output'])) {
+    throw new Error('--manifest cannot be combined with --version or --output');
+  }
+  if (!verifyMode && (!values['--version'] || !values['--output'])) {
+    throw new Error('Generation requires --version and --output');
   }
   return values;
 }
@@ -89,6 +134,13 @@ function parseArguments(argv) {
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArguments(argv);
   const assetRoot = path.resolve(args['--asset-root']);
+  if (args['--manifest']) {
+    const manifestPath = path.resolve(args['--manifest']);
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const verified = await verifyIntegrityManifest({ assetRoot, manifest });
+    process.stdout.write(`Verified ${manifestPath} for ${verified.file.name} and ${verified.dmg.name}\n`);
+    return;
+  }
   const output = path.resolve(args['--output']);
   const manifest = await buildIntegrityManifest({
     assetRoot,

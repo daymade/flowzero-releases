@@ -8,6 +8,7 @@ import {
 } from './generate-update-channel-manifest.mjs';
 
 const updaterZip = 'Flowzero-darwin-arm64-0.1.2-beta.7.zip';
+const dmg = 'Flowzero-0.1.2-beta.7-arm64.dmg';
 const nupkg = 'Flowzero-0.1.2-beta7-full.nupkg';
 const macUpdateIntegrity = {
   schema: 'flowzero.macos_update_integrity.v1',
@@ -16,6 +17,12 @@ const macUpdateIntegrity = {
     name: updaterZip,
     size: 100,
     sha512: Buffer.alloc(64, 2).toString('base64'),
+    sha256: '1'.repeat(64),
+  },
+  dmg: {
+    name: dmg,
+    size: 300,
+    sha256: '5'.repeat(64),
   },
 };
 const squirrelReleases = `hash ${nupkg} 200\n`;
@@ -37,6 +44,12 @@ const release = {
       content_type: 'application/octet-stream',
       size: 200,
       digest: `sha256:${'2'.repeat(64)}`,
+    },
+    {
+      name: dmg,
+      content_type: 'application/x-apple-diskimage',
+      size: 300,
+      digest: `sha256:${'5'.repeat(64)}`,
     },
     {
       name: 'mac-update-integrity.json',
@@ -70,8 +83,7 @@ test('generates a deterministic published channel snapshot', () => {
   assert.equal(manifest.channel, 'beta');
   assert.equal(manifest.state, 'published');
   assert.equal(manifest.tag, release.tag_name);
-  assert.equal(manifest.assets[0].name, nupkg);
-  assert.equal(manifest.assets[0].sha256, '2'.repeat(64));
+  assert.equal(manifest.assets.find((asset) => asset.name === nupkg)?.sha256, '2'.repeat(64));
   assert.deepEqual(manifest.mac_update_integrity, macUpdateIntegrity);
   assert.equal(manifest.squirrel_releases, squirrelReleases);
 });
@@ -104,6 +116,24 @@ test('rejects sidecar and updater evidence that does not match assets', () => {
   assert.throws(
     () => build({ squirrelReleases: 'missing package' }),
     /does not reference/,
+  );
+  assert.throws(
+    () => build({
+      macUpdateIntegrity: {
+        ...macUpdateIntegrity,
+        file: { ...macUpdateIntegrity.file, sha256: '9'.repeat(64) },
+      },
+    }),
+    /ZIP integrity/,
+  );
+  assert.throws(
+    () => build({
+      macUpdateIntegrity: {
+        ...macUpdateIntegrity,
+        dmg: { ...macUpdateIntegrity.dmg, sha256: '9'.repeat(64) },
+      },
+    }),
+    /DMG integrity/,
   );
 });
 

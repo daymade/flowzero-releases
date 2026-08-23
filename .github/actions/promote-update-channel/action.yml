@@ -156,6 +156,7 @@ runs:
         fi
 
         MANIFEST_SHA256="$(sha256sum "$WORK_DIR/channel-manifest.json" | awk '{print $1}')"
+        LOCAL_SIZE="$(stat -c '%s' "$WORK_DIR/channel-manifest.json")"
         CURRENT_KEY="channels/$UPDATE_CHANNEL/current.json"
         IMMUTABLE_URL="${R2_PUBLIC_BASE_URL%/}/$IMMUTABLE_KEY"
         CURRENT_URL="${R2_PUBLIC_BASE_URL%/}/$CURRENT_KEY"
@@ -169,20 +170,41 @@ runs:
             --output text 2>/dev/null
         )"; then
           read -r EXISTING_SIZE EXISTING_SHA256 <<<"$EXISTING_HEAD"
-          LOCAL_SIZE="$(stat -c '%s' "$WORK_DIR/channel-manifest.json")"
           if [[ "$EXISTING_SIZE" != "$LOCAL_SIZE" || "$EXISTING_SHA256" != "$MANIFEST_SHA256" ]]; then
             echo "::error::Immutable channel snapshot conflict for $IMMUTABLE_KEY"
             exit 1
           fi
         else
-          aws s3 cp \
-            "$WORK_DIR/channel-manifest.json" \
-            "s3://$R2_BUCKET/$IMMUTABLE_KEY" \
+          IMMUTABLE_PUT_LOG="$RUNNER_TEMP/flowzero-channel-put-$RANDOM.log"
+          if ! aws s3api put-object \
+            --bucket "$R2_BUCKET" \
+            --key "$IMMUTABLE_KEY" \
+            --body "$WORK_DIR/channel-manifest.json" \
             --endpoint-url "$R2_ENDPOINT" \
             --content-type 'application/json' \
             --cache-control 'public, max-age=31536000, immutable' \
             --metadata "sha256=$MANIFEST_SHA256" \
-            --only-show-errors
+            --if-none-match '*' \
+            >"$IMMUTABLE_PUT_LOG" 2>&1; then
+            if ! EXISTING_HEAD="$(
+              aws s3api head-object \
+                --bucket "$R2_BUCKET" \
+                --key "$IMMUTABLE_KEY" \
+                --endpoint-url "$R2_ENDPOINT" \
+                --query '[ContentLength,Metadata.sha256]' \
+                --output text 2>/dev/null
+            )"; then
+              cat "$IMMUTABLE_PUT_LOG"
+              echo "::error::Conditional upload failed for immutable channel snapshot $IMMUTABLE_KEY"
+              exit 1
+            fi
+            read -r EXISTING_SIZE EXISTING_SHA256 <<<"$EXISTING_HEAD"
+            if [[ "$EXISTING_SIZE" != "$LOCAL_SIZE" || "$EXISTING_SHA256" != "$MANIFEST_SHA256" ]]; then
+              cat "$IMMUTABLE_PUT_LOG"
+              echo "::error::Immutable channel snapshot conflict after concurrent write for $IMMUTABLE_KEY"
+              exit 1
+            fi
+          fi
         fi
 
         curl \
@@ -214,7 +236,6 @@ runs:
             --query '[ContentLength,Metadata.sha256]' \
             --output text
         )
-        LOCAL_SIZE="$(stat -c '%s' "$WORK_DIR/channel-manifest.json")"
         if [[ "$CURRENT_SIZE" != "$LOCAL_SIZE" || "$CURRENT_SHA256" != "$MANIFEST_SHA256" ]]; then
           echo "::error::Current channel pointer verification failed"
           exit 1

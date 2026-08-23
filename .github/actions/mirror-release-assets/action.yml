@@ -137,6 +137,10 @@ runs:
           OBJECT_KEY="releases/$RELEASE_TAG/$ASSET_NAME"
           LOCAL_SIZE="$(stat -c '%s' "$FILE")"
           LOCAL_SHA256="$(sha256sum "$FILE" | awk '{print $1}')"
+          if (( LOCAL_SIZE > 5368709120 )); then
+            echo "::error::Immutable single-request upload limit exceeded for $ASSET_NAME ($LOCAL_SIZE bytes)"
+            exit 1
+          fi
 
           case "$ASSET_NAME" in
             *.dmg) CONTENT_TYPE='application/x-apple-diskimage' ;;
@@ -150,14 +154,52 @@ runs:
               ;;
           esac
 
-          aws s3 cp \
-            "$FILE" \
-            "s3://$R2_BUCKET/$OBJECT_KEY" \
-            --endpoint-url "$R2_ENDPOINT" \
-            --content-type "$CONTENT_TYPE" \
-            --cache-control 'public, max-age=31536000, immutable' \
-            --metadata "sha256=$LOCAL_SHA256" \
-            --only-show-errors
+          R2_EXISTING_HEAD=''
+          if R2_EXISTING_HEAD="$(
+            aws s3api head-object \
+              --bucket "$R2_BUCKET" \
+              --key "$OBJECT_KEY" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --query '[ContentLength,Metadata.sha256]' \
+              --output text 2>/dev/null
+          )"; then
+            read -r R2_EXISTING_SIZE R2_EXISTING_SHA256 <<<"$R2_EXISTING_HEAD"
+            if [[ "$R2_EXISTING_SIZE" != "$LOCAL_SIZE" || "$R2_EXISTING_SHA256" != "$LOCAL_SHA256" ]]; then
+              echo "::error::R2 immutable object conflict for $ASSET_NAME"
+              exit 1
+            fi
+          else
+            R2_PUT_LOG="$RUNNER_TEMP/flowzero-r2-put-$RANDOM.log"
+            if ! aws s3api put-object \
+              --bucket "$R2_BUCKET" \
+              --key "$OBJECT_KEY" \
+              --body "$FILE" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type "$CONTENT_TYPE" \
+              --cache-control 'public, max-age=31536000, immutable' \
+              --metadata "sha256=$LOCAL_SHA256" \
+              --if-none-match '*' \
+              >"$R2_PUT_LOG" 2>&1; then
+              if ! R2_EXISTING_HEAD="$(
+                aws s3api head-object \
+                  --bucket "$R2_BUCKET" \
+                  --key "$OBJECT_KEY" \
+                  --endpoint-url "$R2_ENDPOINT" \
+                  --query '[ContentLength,Metadata.sha256]' \
+                  --output text 2>/dev/null
+              )"; then
+                cat "$R2_PUT_LOG"
+                echo "::error::R2 conditional upload failed for $ASSET_NAME"
+                exit 1
+              fi
+              read -r R2_EXISTING_SIZE R2_EXISTING_SHA256 <<<"$R2_EXISTING_HEAD"
+              if [[ "$R2_EXISTING_SIZE" != "$LOCAL_SIZE" || "$R2_EXISTING_SHA256" != "$LOCAL_SHA256" ]]; then
+                cat "$R2_PUT_LOG"
+                echo "::error::R2 immutable object conflict after concurrent write for $ASSET_NAME"
+                exit 1
+              fi
+            fi
+          fi
 
           read -r REMOTE_SIZE REMOTE_SHA256 < <(
             aws s3api head-object \
@@ -188,15 +230,37 @@ runs:
               exit 1
             fi
           else
-            "$OSSUTIL_BIN" cp \
-              "$FILE" \
-              "oss://$ALIYUN_OSS_BUCKET/$OBJECT_KEY" \
+            OSS_PUT_LOG="$RUNNER_TEMP/flowzero-oss-put-$RANDOM.log"
+            if ! "$OSSUTIL_BIN" api put-object \
+              --bucket "$ALIYUN_OSS_BUCKET" \
+              --key "$OBJECT_KEY" \
+              --body "file://$FILE" \
               --content-type "$CONTENT_TYPE" \
               --cache-control 'public, max-age=31536000, immutable' \
               --metadata "sha256=$LOCAL_SHA256" \
-              --checkpoint-dir "$RUNNER_TEMP/flowzero-oss-checkpoints" \
-              --parallel 8 \
-              "${OSSUTIL_ARGS[@]}"
+              --forbid-overwrite true \
+              "${OSSUTIL_ARGS[@]}" \
+              >"$OSS_PUT_LOG" 2>&1; then
+              if ! OSS_HEAD_JSON="$(
+                "$OSSUTIL_BIN" api head-object \
+                  --bucket "$ALIYUN_OSS_BUCKET" \
+                  --key "$OBJECT_KEY" \
+                  --output-format json \
+                  --quiet \
+                  "${OSSUTIL_ARGS[@]}" 2>/dev/null
+              )"; then
+                cat "$OSS_PUT_LOG"
+                echo "::error::OSS conditional upload failed for $ASSET_NAME"
+                exit 1
+              fi
+              OSS_EXISTING_SIZE="$(jq -r '.Header["Content-Length"][0] // empty' <<<"$OSS_HEAD_JSON")"
+              OSS_EXISTING_SHA256="$(jq -r '.Header["X-Oss-Meta-Sha256"][0] // empty' <<<"$OSS_HEAD_JSON")"
+              if [[ "$OSS_EXISTING_SIZE" != "$LOCAL_SIZE" || "$OSS_EXISTING_SHA256" != "$LOCAL_SHA256" ]]; then
+                cat "$OSS_PUT_LOG"
+                echo "::error::OSS immutable object conflict after concurrent write for $ASSET_NAME"
+                exit 1
+              fi
+            fi
           fi
 
           OSS_HEAD_JSON="$(

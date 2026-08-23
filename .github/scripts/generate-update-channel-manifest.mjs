@@ -8,6 +8,8 @@ export const SCHEMA = 'flowzero.update_channel_manifest.v1';
 
 const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const SHA256_PATTERN = /^sha256:([a-f0-9]{64})$/;
+const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
+const SHA512_BASE64_PATTERN = /^[A-Za-z0-9+/]{86}==$/;
 
 function assertObjectName(value, label) {
   if (
@@ -136,13 +138,36 @@ export function buildChannelManifest({
     || macUpdateIntegrity.schema !== 'flowzero.macos_update_integrity.v1'
     || macUpdateIntegrity.version !== version
     || !macUpdateIntegrity.file
+    || !macUpdateIntegrity.dmg
   ) {
     throw new Error('mac-update-integrity.json does not match the published release');
   }
   assertObjectName(macUpdateIntegrity.file.name, 'macOS updater ZIP name');
+  assertObjectName(macUpdateIntegrity.dmg.name, 'macOS DMG name');
+  if (
+    !Number.isSafeInteger(macUpdateIntegrity.file.size)
+    || macUpdateIntegrity.file.size <= 0
+    || !SHA512_BASE64_PATTERN.test(macUpdateIntegrity.file.sha512 ?? '')
+    || !SHA256_HEX_PATTERN.test(macUpdateIntegrity.file.sha256 ?? '')
+    || !Number.isSafeInteger(macUpdateIntegrity.dmg.size)
+    || macUpdateIntegrity.dmg.size <= 0
+    || !SHA256_HEX_PATTERN.test(macUpdateIntegrity.dmg.sha256 ?? '')
+  ) {
+    throw new Error('mac-update-integrity.json contains invalid macOS asset integrity');
+  }
   const updaterZip = assetByName(assets, macUpdateIntegrity.file.name);
-  if (updaterZip.size !== macUpdateIntegrity.file.size) {
-    throw new Error('macOS updater ZIP size does not match the release asset');
+  if (
+    updaterZip.size !== macUpdateIntegrity.file.size
+    || updaterZip.sha256 !== macUpdateIntegrity.file.sha256
+  ) {
+    throw new Error('macOS updater ZIP integrity does not match the release asset');
+  }
+  const dmg = assetByName(assets, macUpdateIntegrity.dmg.name);
+  if (
+    dmg.size !== macUpdateIntegrity.dmg.size
+    || dmg.sha256 !== macUpdateIntegrity.dmg.sha256
+  ) {
+    throw new Error('macOS DMG integrity does not match the release asset');
   }
 
   const nupkgAssets = assets.filter((asset) => asset.name.toLowerCase().endsWith('.nupkg'));

@@ -37,17 +37,21 @@ jobs:
         id: params
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            echo "ref=${{ github.event.client_payload.ref }}" >> $GITHUB_OUTPUT
             # Accept both head_sha (snake_case) and headSha (camelCase) for robustness
             RESOLVED_SHA="${{ github.event.client_payload.head_sha || github.event.client_payload.headSha }}"
-            echo "head_sha=$RESOLVED_SHA" >> $GITHUB_OUTPUT
-            echo "version=${{ github.event.client_payload.version }}" >> $GITHUB_OUTPUT
-            echo "offline=${{ github.event.client_payload.offline || 'false' }}" >> $GITHUB_OUTPUT
+            {
+              echo "ref=${{ github.event.client_payload.ref }}"
+              echo "head_sha=$RESOLVED_SHA"
+              echo "version=${{ github.event.client_payload.version }}"
+              echo "offline=${{ github.event.client_payload.offline || 'false' }}"
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "ref=${{ inputs.ref }}" >> $GITHUB_OUTPUT
-            echo "head_sha=${{ inputs.head_sha }}" >> $GITHUB_OUTPUT
-            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
-            echo "offline=${{ inputs.offline }}" >> $GITHUB_OUTPUT
+            {
+              echo "ref=${{ inputs.ref }}"
+              echo "head_sha=${{ inputs.head_sha }}"
+              echo "version=${{ inputs.version }}"
+              echo "offline=${{ inputs.offline }}"
+            } >> "$GITHUB_OUTPUT"
           fi
           echo "::notice::version=${{ github.event_name == 'repository_dispatch' && github.event.client_payload.version || inputs.version }}"
 
@@ -262,14 +266,25 @@ jobs:
           name: release-macos-notarize-stage
           path: apps/desktop/out/notarize-stage
 
-      - name: Restore submitted DMG and app bundle
+      - name: Restore and verify submitted DMG before mount
         run: |
           DMG_PATH="apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
-          MOUNT_POINT="$RUNNER_TEMP/flowzero-notarize-source"
-          mkdir -p "$(dirname "$DMG_PATH")" "$MOUNT_POINT"
+          mkdir -p "$(dirname "$DMG_PATH")"
           cp \
             "apps/desktop/out/notarize-stage/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg" \
             "$DMG_PATH"
+          pnpm run release:notarize:ci verify-submission -- \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --head-sha "${{ needs.prepare.outputs.head_sha }}" \
+            --app-path "apps/desktop/out/Flowzero-darwin-arm64/Flowzero.app" \
+            --submission-path "$DMG_PATH" \
+            --state-file "apps/desktop/out/notarize-stage/notarization-state.json"
+
+      - name: Extract verified submitted app bundle
+        run: |
+          DMG_PATH="apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
+          MOUNT_POINT="$RUNNER_TEMP/flowzero-notarize-source"
+          mkdir -p "$MOUNT_POINT"
           hdiutil attach "$DMG_PATH" -mountpoint "$MOUNT_POINT" -nobrowse -readonly
           trap 'hdiutil detach "$MOUNT_POINT" -force 2>/dev/null || true' EXIT
           rm -rf "apps/desktop/out/Flowzero-darwin-arm64"
@@ -426,6 +441,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      mac_integrity_sha256: ${{ steps.mac_release_digests.outputs.mac_integrity_sha256 }}
+      mac_dmg_sha256: ${{ steps.mac_release_digests.outputs.mac_dmg_sha256 }}
+      mac_zip_sha256: ${{ steps.mac_release_digests.outputs.mac_zip_sha256 }}
 
     steps:
       - name: Checkout release infrastructure
@@ -470,6 +489,24 @@ jobs:
             find artifacts -type f | sort
             exit 1
           fi
+
+      - name: Freeze macOS release digests for downstream draft verification
+        id: mac_release_digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          DMG_FILES=(artifacts/release-macos-arm64/*.dmg)
+          ZIP_FILES=(artifacts/release-macos-arm64/zip/darwin/arm64/*.zip)
+          if [[ ${#DMG_FILES[@]} -ne 1 || ${#ZIP_FILES[@]} -ne 1 ]]; then
+            echo "::error::Cannot freeze ambiguous macOS release digests"
+            exit 1
+          fi
+          {
+            echo "mac_integrity_sha256=$(sha256sum artifacts/release-metadata/mac-update-integrity.json | awk '{print $1}')"
+            echo "mac_dmg_sha256=$(sha256sum "${DMG_FILES[0]}" | awk '{print $1}')"
+            echo "mac_zip_sha256=$(sha256sum "${ZIP_FILES[0]}" | awk '{print $1}')"
+          } >> "$GITHUB_OUTPUT"
 
           mapfile -t ALL_FILES < <(find artifacts -type f | sort)
           EXPECTED_FILES=(
@@ -608,6 +645,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout release infrastructure
+        uses: actions/checkout@v4
+
       - name: Download macOS assets from the GitHub draft
         env:
           GH_TOKEN: ${{ github.token }}
@@ -616,22 +656,41 @@ jobs:
           mkdir -p /tmp/verify-macos
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "*.dmg" --dir /tmp/verify-macos
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "*.zip" --dir /tmp/verify-macos
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "mac-update-integrity.json" --dir /tmp/verify-macos
 
           shopt -s nullglob
           DMG_FILES=(/tmp/verify-macos/*.dmg)
           ZIP_FILES=(/tmp/verify-macos/*.zip)
-          if [ "${#DMG_FILES[@]}" -ne 1 ] || [ "${#ZIP_FILES[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one draft DMG and one draft ZIP"
+          INTEGRITY_FILES=(/tmp/verify-macos/mac-update-integrity.json)
+          if [ "${#DMG_FILES[@]}" -ne 1 ] || [ "${#ZIP_FILES[@]}" -ne 1 ] || [ "${#INTEGRITY_FILES[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one draft DMG, updater ZIP, and integrity manifest"
             find /tmp/verify-macos -maxdepth 1 -type f -print
             exit 1
           fi
 
           DMG_FILE="${DMG_FILES[0]}"
           ZIP_FILE="${ZIP_FILES[0]}"
-          echo "DMG_FILE=$DMG_FILE" >> "$GITHUB_ENV"
-          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+          INTEGRITY_FILE="${INTEGRITY_FILES[0]}"
+          {
+            echo "DMG_FILE=$DMG_FILE"
+            echo "ZIP_FILE=$ZIP_FILE"
+            echo "INTEGRITY_FILE=$INTEGRITY_FILE"
+          } >> "$GITHUB_ENV"
           echo "Downloaded DMG: $DMG_FILE"
           echo "Downloaded ZIP: $ZIP_FILE"
+
+      - name: Verify GitHub draft asset identity
+        env:
+          EXPECTED_INTEGRITY_SHA256: ${{ needs.create-release-draft.outputs.mac_integrity_sha256 }}
+          EXPECTED_DMG_SHA256: ${{ needs.create-release-draft.outputs.mac_dmg_sha256 }}
+          EXPECTED_ZIP_SHA256: ${{ needs.create-release-draft.outputs.mac_zip_sha256 }}
+        run: |
+          printf '%s  %s\n' "$EXPECTED_INTEGRITY_SHA256" "$INTEGRITY_FILE" | shasum -a 256 --check -
+          printf '%s  %s\n' "$EXPECTED_DMG_SHA256" "$DMG_FILE" | shasum -a 256 --check -
+          printf '%s  %s\n' "$EXPECTED_ZIP_SHA256" "$ZIP_FILE" | shasum -a 256 --check -
+          node .github/scripts/generate-macos-update-integrity.mjs \
+            --asset-root /tmp/verify-macos \
+            --manifest "$INTEGRITY_FILE"
 
       - name: Verify signed and notarized DMG
         run: |
