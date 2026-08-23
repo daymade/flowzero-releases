@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { parseProjectReleaseTag } from './release-tag-contract.mjs';
 
 export const SCHEMA = 'flowzero.release_asset_identity.v1';
 
@@ -63,6 +64,7 @@ export function buildReleaseAssetIdentity(release, options = {}) {
   if (typeof options.expectedTag === 'string' && release.tag_name !== options.expectedTag) {
     throw new Error(`Release tag mismatch: expected ${options.expectedTag}`);
   }
+  parseProjectReleaseTag(release.tag_name);
   if (
     typeof options.expectedDraft === 'boolean'
     && release.draft !== options.expectedDraft

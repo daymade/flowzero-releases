@@ -3,6 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { parseProjectReleaseTag } from './release-tag-contract.mjs';
 
 export function selectPublishedReleaseTag(releasePages, channel) {
   if (!['stable', 'beta'].includes(channel)) {
@@ -25,7 +26,13 @@ export function selectPublishedReleaseTag(releasePages, channel) {
         if (typeof release.tag_name !== 'string' || !release.tag_name.trim()) {
           throw new Error('Published release tag_name must be a non-empty string');
         }
-        return release.tag_name.trim();
+        const tag = release.tag_name.trim();
+        try {
+          const parsed = parseProjectReleaseTag(tag);
+          if (parsed.channel === channel) return tag;
+        } catch {
+          // Legacy/manual tags outside Flowzero's exact channels do not own a channel pointer.
+        }
       }
     }
   }

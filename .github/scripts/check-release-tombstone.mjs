@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseProjectReleaseTag } from './release-tag-contract.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_POLICY_PATH = path.resolve(
@@ -11,7 +12,6 @@ export const DEFAULT_POLICY_PATH = path.resolve(
   'release-tombstones.json'
 );
 
-const RELEASE_TAG_PATTERN = /^v\d+\.\d+\.\d+(?:-[a-z]+\.\d+)?$/;
 const WITHDRAWAL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const REASON_PATTERN = /^[a-z0-9_]+$/;
 
@@ -35,7 +35,9 @@ export function parseReleaseTombstones(raw, source = '<release-tombstones>') {
     if (!release || typeof release !== 'object' || Array.isArray(release)) {
       throw new Error(`Invalid release tombstone entry at ${source}:releases[${index}]`);
     }
-    if (!RELEASE_TAG_PATTERN.test(release.tag || '')) {
+    try {
+      parseProjectReleaseTag(release.tag);
+    } catch {
       throw new Error(`Invalid release tombstone tag at ${source}:releases[${index}]`);
     }
     if (!WITHDRAWAL_DATE_PATTERN.test(release.withdrawn_on || '')) {
@@ -54,9 +56,7 @@ export function parseReleaseTombstones(raw, source = '<release-tombstones>') {
 }
 
 export function assertReleaseTagAllowed(policy, tag) {
-  if (!RELEASE_TAG_PATTERN.test(tag || '')) {
-    throw new Error(`Invalid release tag: ${tag || '<empty>'}`);
-  }
+  parseProjectReleaseTag(tag);
 
   const tombstone = policy.releases.find((release) => release.tag === tag);
   if (tombstone) {

@@ -79,7 +79,7 @@ test('prepare rejects non-channel tags before any build can start', async () => 
     '--allow-downgrade', 'false',
   ], { encoding: 'utf8' });
   assert.notEqual(invalidCandidate.status, 0);
-  assert.match(invalidCandidate.stderr, /does not match the beta channel contract/u);
+  assert.match(invalidCandidate.stderr, /must match canonical/u);
 });
 
 test('no-release checks every GitHub Releases page before clearing a channel', async () => {
@@ -331,13 +331,46 @@ test('every channel writer uses the same non-cancelling concurrency group', asyn
     readFile(new URL('../workflows/mirror-published-release.yml', import.meta.url), 'utf8'),
     readFile(new URL('../workflows/initialize-empty-update-channel.yml', import.meta.url), 'utf8'),
   ]);
-  assert.match(release, /group: flowzero-update-channel-\$\{\{ needs\.prepare\.outputs\.channel \}\}[\s\S]*cancel-in-progress: false/u);
+  assert.match(
+    release,
+    /group: flowzero-update-channel-\$\{\{ contains\(github\.event\.client_payload\.version \|\| inputs\.version, '-'\) && 'beta' \|\| 'stable' \}\}[\s\S]*cancel-in-progress: false/u,
+  );
   for (const workflow of [mirror, initialize]) {
     assert.match(workflow, /group: flowzero-update-channel-\$\{\{ inputs\.channel \}\}[\s\S]*cancel-in-progress: false/u);
   }
   for (const workflow of [release, mirror, initialize]) {
     assert.match(workflow, /group: flowzero-update-channel-[^\n]+\n\s+queue: max\n\s+cancel-in-progress: false/u);
   }
+});
+
+test('channel ordering is checked before immutable writes in standard and manual release paths', async () => {
+  const [release, mirror] = await Promise.all([
+    readFile(new URL('../workflows/release.yml', import.meta.url), 'utf8'),
+    readFile(new URL('../workflows/mirror-published-release.yml', import.meta.url), 'utf8'),
+  ]);
+  const standardPreflight = release.indexOf('- name: Reject channel downgrade before immutable writes');
+  const standardMirror = release.indexOf('uses: ./.github/actions/mirror-release-assets');
+  const createDraft = release.indexOf('- name: Create Release (draft)');
+  assert.ok(standardPreflight >= 0);
+  assert.ok(standardMirror > standardPreflight);
+  assert.ok(createDraft > standardMirror);
+  assert.match(
+    release.slice(standardPreflight, standardMirror),
+    /--current-manifest "\$CURRENT_MANIFEST"[\s\S]*--allow-downgrade false/u,
+  );
+
+  const manualTagGate = mirror.indexOf('- name: Validate release tag and channel contract');
+  const manualPreflight = mirror.indexOf('- name: Validate current channel ordering before mirror');
+  const manualDownload = mirror.indexOf('- name: Download the published release manifest');
+  const manualMirror = mirror.indexOf('uses: ./.github/actions/mirror-release-assets');
+  assert.ok(manualTagGate >= 0);
+  assert.ok(manualPreflight > manualTagGate);
+  assert.ok(manualDownload > manualPreflight);
+  assert.ok(manualMirror > manualDownload);
+  assert.match(
+    mirror.slice(manualPreflight, manualDownload),
+    /--current-manifest "\$CURRENT_MANIFEST"[\s\S]*--allow-downgrade "\$ALLOW_DOWNGRADE"/u,
+  );
 });
 
 test('immutable channel snapshots are conditional while current.json remains the sole mutable pointer', async () => {

@@ -3,26 +3,10 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-
-function parseNumeric(value, label) {
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    throw new Error(`${label} must be a non-negative safe integer`);
-  }
-  return parsed;
-}
+import { parseChannelReleaseTag } from './release-tag-contract.mjs';
 
 export function parseChannelVersion(tag, channel) {
-  if (typeof tag !== 'string') throw new Error('Release tag must be a string');
-  const pattern = channel === 'stable'
-    ? /^v(\d+)\.(\d+)\.(\d+)$/u
-    : channel === 'beta'
-      ? /^v(\d+)\.(\d+)\.(\d+)-beta\.(\d+)$/u
-      : null;
-  if (!pattern) throw new Error('Channel must be stable or beta');
-  const match = tag.match(pattern);
-  if (!match) throw new Error(`Release tag ${tag} does not match the ${channel} channel contract`);
-  return match.slice(1).map((value, index) => parseNumeric(value, `Version part ${index + 1}`));
+  return parseChannelReleaseTag(tag, channel).parts;
 }
 
 function compareParts(left, right) {

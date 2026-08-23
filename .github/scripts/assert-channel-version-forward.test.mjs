@@ -17,7 +17,7 @@ test('parses only the project stable and beta version contracts', () => {
   assert.deepEqual(parseChannelVersion('v1.2.3', 'stable'), [1, 2, 3]);
   assert.deepEqual(parseChannelVersion('v1.2.3-beta.45', 'beta'), [1, 2, 3, 45]);
   assert.throws(() => parseChannelVersion('v1.2.3-beta.1', 'stable'), /contract/u);
-  assert.throws(() => parseChannelVersion('v1.2.3-rc.1', 'beta'), /contract/u);
+  assert.throws(() => parseChannelVersion('v1.2.3-rc.1', 'beta'), /canonical/u);
 });
 
 test('allows forward and idempotent promotion but blocks downgrade', () => {

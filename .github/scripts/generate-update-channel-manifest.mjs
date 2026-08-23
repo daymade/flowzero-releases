@@ -4,11 +4,11 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { parseProjectReleaseTag } from './release-tag-contract.mjs';
 import { verifySquirrelReleases } from './verify-squirrel-releases.mjs';
 
 export const SCHEMA = 'flowzero.update_channel_manifest.v1';
 
-const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const SHA256_PATTERN = /^sha256:([a-f0-9]{64})$/;
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
 const SHA512_BASE64_PATTERN = /^[A-Za-z0-9+/]{86}==$/;
@@ -27,14 +27,7 @@ function assertObjectName(value, label) {
 }
 
 function releaseVersion(tag) {
-  if (typeof tag !== 'string' || !tag.startsWith('v')) {
-    throw new Error('Release tag must start with v');
-  }
-  const version = tag.slice(1);
-  if (!SEMVER_PATTERN.test(version)) {
-    throw new Error(`Release tag is not SemVer-compatible: ${tag}`);
-  }
-  return version;
+  return parseProjectReleaseTag(tag).version;
 }
 
 function expectedPrerelease(channel) {

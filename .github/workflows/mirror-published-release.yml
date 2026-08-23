@@ -42,10 +42,41 @@ jobs:
           ref: main
           persist-credentials: false
 
-      - name: Reject permanently withdrawn versions
+      - name: Validate release tag and channel contract
         env:
           RELEASE_TAG: ${{ inputs.tag }}
-        run: node .github/scripts/check-release-tombstone.mjs --tag "$RELEASE_TAG"
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+        run: |
+          node .github/scripts/check-release-tombstone.mjs --tag "$RELEASE_TAG"
+          node .github/scripts/assert-channel-version-forward.mjs \
+            --channel "$RELEASE_CHANNEL" \
+            --target-tag "$RELEASE_TAG" \
+            --allow-downgrade false
+
+      - name: Validate current channel ordering before mirror
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          ALLOW_DOWNGRADE: ${{ inputs.allow_downgrade }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+        run: |
+          set -euo pipefail
+          CURRENT_MANIFEST="$RUNNER_TEMP/tinkle_flowzero-current-channel.json"
+          aws s3api get-object \
+            --bucket "$R2_BUCKET" \
+            --key "channels/$RELEASE_CHANNEL/current.json" \
+            --endpoint-url "$R2_ENDPOINT" \
+            "$CURRENT_MANIFEST" \
+            > /dev/null
+          node .github/scripts/assert-channel-version-forward.mjs \
+            --channel "$RELEASE_CHANNEL" \
+            --target-tag "$RELEASE_TAG" \
+            --current-manifest "$CURRENT_MANIFEST" \
+            --allow-downgrade "$ALLOW_DOWNGRADE"
 
       - name: Download the published release manifest
         if: ${{ inputs.mirror_assets }}

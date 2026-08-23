@@ -29,3 +29,15 @@ test('ignores drafts, returns empty for no release, and rejects malformed pages'
   assert.throws(() => selectPublishedReleaseTag([{}], 'stable'), /page arrays/u);
   assert.throws(() => selectPublishedReleaseTag([[null]], 'stable'), /entry must be an object/u);
 });
+
+test('ignores legacy tags that do not match the exact Flowzero channel contract', () => {
+  const pages = [[
+    { tag_name: 'v1.2.3-rc.1', draft: false, prerelease: true },
+    { tag_name: 'v1.2.3-beta.01', draft: false, prerelease: true },
+    { tag_name: 'release-not-semver', draft: false, prerelease: false },
+    { tag_name: 'v1.2.3-beta.8', draft: false, prerelease: true },
+    { tag_name: 'v1.2.3', draft: false, prerelease: false },
+  ]];
+  assert.equal(selectPublishedReleaseTag(pages, 'beta'), 'v1.2.3-beta.8');
+  assert.equal(selectPublishedReleaseTag(pages, 'stable'), 'v1.2.3');
+});

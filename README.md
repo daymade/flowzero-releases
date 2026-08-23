@@ -79,6 +79,7 @@ Then compare with the checksum shown in the corresponding GitHub Release asset d
 | Beta | `vX.Y.Z-beta.N` | `https://updates-beta.flowzero.app` |
 
 `Beta` releases are published as GitHub Pre-releases.
+Each channel is serialized across build, mirror, publication, and pointer promotion. The exact canonical tag and current channel version are validated before any immutable R2/OSS object or GitHub Release is created.
 
 When a channel has no matching published release—before its first release or
 after an authorized withdrawal—the explicit `Initialize Empty Update Channel`

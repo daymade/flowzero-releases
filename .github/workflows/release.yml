@@ -20,7 +20,8 @@ on:
         default: false
 
 concurrency:
-  group: release-${{ github.event.client_payload.version || inputs.version }}
+  group: flowzero-update-channel-${{ contains(github.event.client_payload.version || inputs.version, '-') && 'beta' || 'stable' }}
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -74,6 +75,30 @@ jobs:
           node .github/scripts/assert-channel-version-forward.mjs \
             --channel "$RELEASE_CHANNEL" \
             --target-tag "$RELEASE_TAG" \
+            --allow-downgrade false
+
+      - name: Reject channel downgrade before immutable writes
+        env:
+          RELEASE_TAG: v${{ steps.params.outputs.version }}
+          RELEASE_CHANNEL: ${{ contains(steps.params.outputs.version, '-') && 'beta' || 'stable' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+        run: |
+          set -euo pipefail
+          CURRENT_MANIFEST="$RUNNER_TEMP/tinkle_flowzero-current-channel.json"
+          aws s3api get-object \
+            --bucket "$R2_BUCKET" \
+            --key "channels/$RELEASE_CHANNEL/current.json" \
+            --endpoint-url "$R2_ENDPOINT" \
+            "$CURRENT_MANIFEST" \
+            > /dev/null
+          node .github/scripts/assert-channel-version-forward.mjs \
+            --channel "$RELEASE_CHANNEL" \
+            --target-tag "$RELEASE_TAG" \
+            --current-manifest "$CURRENT_MANIFEST" \
             --allow-downgrade false
 
       - name: Verify release workflow contracts
@@ -980,10 +1005,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    concurrency:
-      group: flowzero-update-channel-${{ needs.prepare.outputs.channel }}
-      queue: max
-      cancel-in-progress: false
     steps:
       - name: Checkout release infrastructure
         uses: actions/checkout@v4
