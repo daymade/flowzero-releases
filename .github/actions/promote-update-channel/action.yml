@@ -273,7 +273,19 @@ runs:
           "$IMMUTABLE_URL" \
           | sha256sum --check <(printf '%s  -\n' "$MANIFEST_SHA256")
 
-        if [[ "$RELEASE_TAG" != 'no_release' ]]; then
+        if [[ "$CHANNEL_STATE" == 'published' ]]; then
+          ASSET_IDENTITY_TSV="$WORK_DIR/release-asset-identity.tsv"
+          if ! jq -r '.assets[] | [.name, (.size | tostring), .sha256] | @tsv' \
+            "$WORK_DIR/release-asset-identity.json" \
+            > "$ASSET_IDENTITY_TSV"; then
+            echo "::error::Unable to materialize the published release asset identity"
+            exit 1
+          fi
+          ASSET_IDENTITY_ROWS="$(awk 'NF { count += 1 } END { print count + 0 }' "$ASSET_IDENTITY_TSV")"
+          if [[ "$ASSET_IDENTITY_ROWS" != '6' ]]; then
+            echo "::error::Published release asset identity must contain exactly six assets"
+            exit 1
+          fi
           while IFS=$'\t' read -r ASSET_NAME ASSET_SIZE ASSET_SHA256; do
             read -r R2_SIZE R2_SHA256 < <(
               aws s3api head-object \
@@ -308,7 +320,7 @@ runs:
               echo "::error::Published GitHub asset does not match public OSS bytes immediately before channel CAS: $ASSET_NAME"
               exit 1
             fi
-          done < <(jq -r '.assets[] | [.name, (.size | tostring), .sha256] | @tsv' "$WORK_DIR/release-asset-identity.json")
+          done < "$ASSET_IDENTITY_TSV"
         fi
 
         CURRENT_CONDITION_ARGS=()

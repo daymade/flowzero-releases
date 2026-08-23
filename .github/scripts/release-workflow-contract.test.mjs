@@ -423,7 +423,7 @@ test('channel CAS requires contemporaneous full public bytes from both mirrors',
   assert.match(mirror, /Promote mirrored release[\s\S]*ALIYUN_OSS_PUBLIC_BASE_URL:/u);
 });
 
-test('the real promotion shell rejects either mirror changing after immutable snapshot verification', async () => {
+test('the real promotion shell rejects mirror mutation and keeps no_release independent from asset verification', async () => {
   const action = await readFile(
     new URL('../actions/promote-update-channel/action.yml', import.meta.url),
     'utf8',
@@ -444,7 +444,7 @@ test('the real promotion shell rejects either mirror changing after immutable sn
     createHash(algorithm).update(value).digest(encoding)
   );
 
-  async function runCase(mutateOrigin) {
+  async function runCase(mutateOrigin, channelState = 'published') {
     const root = await mkdtemp(path.join(os.tmpdir(), 'tinkle_flowzero-promote-cas-'));
     const assetRoot = path.join(root, 'tinkle_assets');
     const r2PublicRoot = path.join(root, 'tinkle_r2-public');
@@ -544,6 +544,10 @@ if (args[0] === 'release' && args[1] === 'download') {
   fs.copyFileSync(path.join(process.env.TINKLE_ASSET_ROOT, pattern), path.join(outputDir, pattern));
   process.exit(0);
 }
+if (args[0] === 'api' && process.env.CHANNEL_STATE === 'no_release') {
+  process.stdout.write('[[]]');
+  process.exit(0);
+}
 if (args[0] === 'api') {
   process.stdout.write(fs.readFileSync(process.env.TINKLE_RELEASE_JSON));
   process.exit(0);
@@ -598,7 +602,7 @@ if (!urlArg) process.exit(95);
 const url = new URL(urlArg);
 const key = decodeURIComponent(url.pathname.replace(/^\\/+/, ''));
 const outputIndex = args.indexOf('--output');
-if (key.startsWith('channels/beta/releases/')) {
+if (key.startsWith('channels/beta/releases/') || key === 'channels/beta/states/no-release.json') {
   const origin = process.env.TINKLE_MUTATE_ORIGIN;
   if (origin === 'r2' || origin === 'oss') {
     const root = origin === 'r2' ? process.env.TINKLE_R2_PUBLIC : process.env.TINKLE_OSS_PUBLIC;
@@ -665,8 +669,8 @@ curl() { node "$TINKLE_FAKE_CURL" "$@"; }
           GITHUB_REPOSITORY: 'daymade/flowzero-releases',
           GITHUB_ACTION_PATH: path.join(repoRoot, '.github', 'actions', 'promote-update-channel'),
           RUNNER_TEMP: root,
-          RELEASE_TAG: tag,
-          CHANNEL_STATE: 'published',
+          RELEASE_TAG: channelState === 'published' ? tag : '',
+          CHANNEL_STATE: channelState,
           UPDATE_CHANNEL: 'beta',
           ALLOW_DOWNGRADE: 'false',
           TINKLE_ASSET_ROOT: assetRoot,
@@ -688,7 +692,14 @@ curl() { node "$TINKLE_FAKE_CURL" "$@"; }
         error.code === 'ENOENT' ? '' : Promise.reject(error)
       ));
       const cas = await readOptional(casLog);
-      if (mutateOrigin === 'none') {
+      if (channelState === 'no_release') {
+        assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+        assert.equal(cas, 'CAS\n');
+        assert.doesNotMatch(
+          `${result.stdout}\n${result.stderr}`,
+          /release-asset-identity|jq: error/iu,
+        );
+      } else if (mutateOrigin === 'none') {
         assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
         assert.equal(cas, 'CAS\n');
       } else {
@@ -708,6 +719,7 @@ curl() { node "$TINKLE_FAKE_CURL" "$@"; }
   for (const mutateOrigin of ['none', 'r2', 'oss']) {
     await runCase(mutateOrigin);
   }
+  await runCase('none', 'no_release');
 });
 
 test('immutable channel snapshots are conditional while current.json remains the sole mutable pointer', async () => {
