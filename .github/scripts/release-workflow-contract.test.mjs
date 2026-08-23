@@ -388,7 +388,7 @@ test('manual dispatch always executes privileged release infrastructure from mai
     assert.ok(start >= 0 && end > start, `missing job block: ${jobName}`);
     assert.match(
       workflow.slice(start, end),
-      /- name: Checkout release infrastructure\n\s+uses: actions\/checkout@v4\n\s+with:\n\s+ref: main\n\s+persist-credentials: false/u,
+      /- name: Checkout release infrastructure\n\s+uses: actions\/checkout@v\d+\n\s+with:\n\s+ref: main\n\s+persist-credentials: false/u,
     );
   }
 });

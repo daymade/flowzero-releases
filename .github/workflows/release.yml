@@ -57,7 +57,7 @@ jobs:
           echo "::notice::version=${{ github.event_name == 'repository_dispatch' && github.event.client_payload.version || inputs.version }}"
 
       - name: Checkout current release policy
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           persist-credentials: false
@@ -113,7 +113,7 @@ jobs:
     timeout-minutes: 360
     steps:
       - name: Checkout source (private repo)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: daymade/flowzero
           token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
@@ -121,10 +121,10 @@ jobs:
           lfs: true
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version-file: '.nvmrc'
           cache: 'pnpm'
@@ -135,7 +135,7 @@ jobs:
           version: '0.11.28'
 
       - name: Cache Electron
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/electron
@@ -174,7 +174,7 @@ jobs:
 
       - name: Import Apple certificates
         if: ${{ env.HAS_CERT == 'true' }}
-        uses: apple-actions/import-codesign-certs@v3
+        uses: apple-actions/import-codesign-certs@v7
         with:
           p12-file-base64: ${{ secrets.MACOS_CERT_P12 }}
           p12-password: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -242,7 +242,7 @@ jobs:
             "apps/desktop/out/notarize-stage/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
 
       - name: Upload signed DMG + notarization state
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-macos-notarize-stage
           retention-days: 7
@@ -259,7 +259,7 @@ jobs:
     timeout-minutes: 360
     steps:
       - name: Checkout source (private repo)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: daymade/flowzero
           token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
@@ -267,10 +267,10 @@ jobs:
           lfs: true
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version-file: '.nvmrc'
           cache: 'pnpm'
@@ -280,7 +280,7 @@ jobs:
           df -h
 
       - name: Cache Electron
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/electron
@@ -299,7 +299,7 @@ jobs:
           echo "${{ secrets.APPLE_API_KEY }}" | base64 --decode > /tmp/AuthKey.p8
 
       - name: Download signed DMG + notarization state
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-macos-notarize-stage
           path: apps/desktop/out/notarize-stage
@@ -389,7 +389,7 @@ jobs:
         run: bash scripts/assert-public-artifact-safety.sh --release-dir apps/desktop/out/make --platform macos
 
       - name: Upload macOS arm64 artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-macos-arm64
           retention-days: 3
@@ -406,7 +406,7 @@ jobs:
     timeout-minutes: 360
     steps:
       - name: Checkout source (private repo)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: daymade/flowzero
           token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
@@ -414,10 +414,10 @@ jobs:
           lfs: true
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version-file: '.nvmrc'
           cache: 'pnpm'
@@ -462,7 +462,7 @@ jobs:
         run: bash scripts/assert-public-artifact-safety.sh --release-dir apps/desktop/out/make/squirrel.windows/x64 --platform windows
 
       - name: Upload Windows x64 artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-windows-x64
           retention-days: 3
@@ -487,7 +487,7 @@ jobs:
 
     steps:
       - name: Checkout release infrastructure
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           persist-credentials: false
@@ -495,13 +495,13 @@ jobs:
       # Stage 1 intentionally retains an unstapled DMG with the same basename as
       # the final DMG. Only final artifacts may enter the release upload tree.
       - name: Download final macOS release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-macos-arm64
           path: artifacts/release-macos-arm64
 
       - name: Download final Windows release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-windows-x64
           path: artifacts/release-windows-x64
@@ -632,7 +632,7 @@ jobs:
 
       - name: Create Release (draft)
         id: create_release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ needs.prepare.outputs.version }}
           name: Flowzero v${{ needs.prepare.outputs.version }}
@@ -694,15 +694,15 @@ jobs:
           echo "RELEASES file correctly references $NUPKG_NAME"
 
       - name: Delete macOS build artifacts after draft upload
-        uses: geekyeggo/delete-artifact@v5
+        uses: geekyeggo/delete-artifact@v6
         with:
           name: release-macos-arm64
       - name: Delete Windows build artifacts after draft upload
-        uses: geekyeggo/delete-artifact@v5
+        uses: geekyeggo/delete-artifact@v6
         with:
           name: release-windows-x64
       - name: Delete notarization stage artifacts after draft upload
-        uses: geekyeggo/delete-artifact@v5
+        uses: geekyeggo/delete-artifact@v6
         with:
           name: release-macos-notarize-stage
 
@@ -861,17 +861,17 @@ jobs:
       contents: read
     steps:
       - name: Checkout source (for smoke test script)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: daymade/flowzero
           token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
           ref: ${{ needs.prepare.outputs.head_sha }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version-file: '.nvmrc'
 
@@ -929,7 +929,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout current release policy
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           persist-credentials: false
@@ -1013,7 +1013,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout release infrastructure
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           persist-credentials: false
