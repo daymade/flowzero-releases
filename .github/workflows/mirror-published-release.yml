@@ -31,6 +31,9 @@ jobs:
   mirror:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    concurrency:
+      group: flowzero-update-channel-${{ inputs.channel }}
+      cancel-in-progress: false
     steps:
       - name: Checkout release infrastructure
         uses: actions/checkout@v4
@@ -77,7 +80,7 @@ jobs:
           ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
 
       - name: Verify channel manifest generator
-        run: node --test .github/scripts/generate-update-channel-manifest.test.mjs
+        run: node --test .github/scripts/*.test.mjs
 
       - name: Promote mirrored release to the selected channel
         uses: ./.github/actions/promote-update-channel

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -101,6 +102,8 @@ export function buildChannelManifest({
   squirrelReleases,
   macIntegrityByteLength,
   squirrelReleasesByteLength,
+  macIntegritySha256,
+  squirrelReleasesSha256,
 }) {
   if (!release || typeof release !== 'object' || Array.isArray(release)) {
     throw new Error('Release metadata must be an object');
@@ -131,6 +134,18 @@ export function buildChannelManifest({
   }
   if (releasesAsset.size !== squirrelReleasesByteLength) {
     throw new Error('RELEASES byte length does not match the release asset');
+  }
+  if (!SHA256_HEX_PATTERN.test(macIntegritySha256 ?? '')) {
+    throw new Error('mac-update-integrity.json content SHA-256 is invalid');
+  }
+  if (!SHA256_HEX_PATTERN.test(squirrelReleasesSha256 ?? '')) {
+    throw new Error('RELEASES content SHA-256 is invalid');
+  }
+  if (macIntegrityAsset.sha256 !== macIntegritySha256) {
+    throw new Error('mac-update-integrity.json content does not match the release asset digest');
+  }
+  if (releasesAsset.sha256 !== squirrelReleasesSha256) {
+    throw new Error('RELEASES content does not match the release asset digest');
   }
 
   if (
@@ -260,6 +275,8 @@ export async function main(argv = process.argv.slice(2)) {
       squirrelReleases: releasesBuffer.toString('utf8'),
       macIntegrityByteLength: macIntegrityBuffer.byteLength,
       squirrelReleasesByteLength: releasesBuffer.byteLength,
+      macIntegritySha256: createHash('sha256').update(macIntegrityBuffer).digest('hex'),
+      squirrelReleasesSha256: createHash('sha256').update(releasesBuffer).digest('hex'),
     });
   }
   const output = path.resolve(args['--output']);

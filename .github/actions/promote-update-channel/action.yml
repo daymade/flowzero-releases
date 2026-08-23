@@ -117,6 +117,27 @@ runs:
             exit 1
           fi
 
+          node \
+            "$GITHUB_ACTION_PATH/../../scripts/release-asset-identity.mjs" \
+            --release-json "$WORK_DIR/release.json" \
+            --expected-tag "$RELEASE_TAG" \
+            --expected-draft false \
+            --output "$WORK_DIR/release-asset-identity.json"
+          while IFS=$'\t' read -r ASSET_NAME ASSET_SIZE ASSET_SHA256; do
+            read -r R2_SIZE R2_SHA256 < <(
+              aws s3api head-object \
+                --bucket "$R2_BUCKET" \
+                --key "releases/$RELEASE_TAG/$ASSET_NAME" \
+                --endpoint-url "$R2_ENDPOINT" \
+                --query '[ContentLength,Metadata.sha256]' \
+                --output text
+            )
+            if [[ "$R2_SIZE" != "$ASSET_SIZE" || "$R2_SHA256" != "$ASSET_SHA256" ]]; then
+              echo "::error::Published GitHub asset does not match immutable R2 evidence: $ASSET_NAME"
+              exit 1
+            fi
+          done < <(jq -r '.assets[] | [.name, (.size | tostring), .sha256] | @tsv' "$WORK_DIR/release-asset-identity.json")
+
           if [[ "$ALLOW_DOWNGRADE" != 'true' ]]; then
             if [[ "$UPDATE_CHANNEL" == 'beta' ]]; then
               LATEST_TAG="$(
@@ -152,6 +173,19 @@ runs:
             --mac-integrity "$WORK_DIR/mac-update-integrity.json" \
             --releases "$WORK_DIR/RELEASES" \
             --output "$WORK_DIR/channel-manifest.json"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            > "$WORK_DIR/release-before-current.json"
+          node \
+            "$GITHUB_ACTION_PATH/../../scripts/release-asset-identity.mjs" \
+            --release-json "$WORK_DIR/release-before-current.json" \
+            --expected-tag "$RELEASE_TAG" \
+            --expected-draft false \
+            --output "$WORK_DIR/release-asset-identity-before-current.json"
+          if [[ "$(jq -r '.fingerprint' "$WORK_DIR/release-asset-identity.json")" != "$(jq -r '.fingerprint' "$WORK_DIR/release-asset-identity-before-current.json")" ]]; then
+            echo "::error::GitHub release asset identity changed during channel promotion"
+            exit 1
+          fi
           IMMUTABLE_KEY="channels/$UPDATE_CHANNEL/releases/$RELEASE_TAG.json"
         fi
 

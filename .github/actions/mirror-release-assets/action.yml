@@ -70,6 +70,17 @@ runs:
           --user-agent flowzero-release-ci
         )
 
+        OSS_VERSIONING_JSON="$RUNNER_TEMP/flowzero-oss-bucket-versioning.json"
+        "$OSSUTIL_BIN" api get-bucket-versioning \
+          --bucket "$ALIYUN_OSS_BUCKET" \
+          --output-format json \
+          --quiet \
+          "${OSSUTIL_ARGS[@]}" \
+          > "$OSS_VERSIONING_JSON"
+        node \
+          "$GITHUB_ACTION_PATH/../../scripts/assert-oss-bucket-unversioned.mjs" \
+          --input "$OSS_VERSIONING_JSON"
+
         mapfile -d '' ASSET_FILES < <(find "$ASSET_ROOT" -type f -print0)
         if [[ ${#ASSET_FILES[@]} -eq 0 ]]; then
           echo "::error::Mirror input is empty"

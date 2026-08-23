@@ -28,7 +28,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify channel manifest generator
-        run: node --test .github/scripts/generate-update-channel-manifest.test.mjs
+        run: node --test .github/scripts/*.test.mjs
 
       - name: Promote explicit no-release state
         uses: ./.github/actions/promote-update-channel

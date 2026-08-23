@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import {
@@ -26,6 +27,9 @@ const macUpdateIntegrity = {
   },
 };
 const squirrelReleases = `hash ${nupkg} 200\n`;
+const macIntegrityContent = `${JSON.stringify(macUpdateIntegrity, null, 2)}\n`;
+const macIntegritySha256 = createHash('sha256').update(macIntegrityContent).digest('hex');
+const squirrelReleasesSha256 = createHash('sha256').update(squirrelReleases).digest('hex');
 const release = {
   tag_name: 'v0.1.2-beta.7',
   draft: false,
@@ -54,14 +58,14 @@ const release = {
     {
       name: 'mac-update-integrity.json',
       content_type: 'application/json',
-      size: 250,
-      digest: `sha256:${'3'.repeat(64)}`,
+      size: Buffer.byteLength(macIntegrityContent),
+      digest: `sha256:${macIntegritySha256}`,
     },
     {
       name: 'RELEASES',
       content_type: 'application/octet-stream',
       size: Buffer.byteLength(squirrelReleases),
-      digest: `sha256:${'4'.repeat(64)}`,
+      digest: `sha256:${squirrelReleasesSha256}`,
     },
   ],
 };
@@ -71,8 +75,10 @@ const build = (overrides = {}) => buildChannelManifest({
   channel: 'beta',
   macUpdateIntegrity,
   squirrelReleases,
-  macIntegrityByteLength: 250,
+  macIntegrityByteLength: Buffer.byteLength(macIntegrityContent),
   squirrelReleasesByteLength: Buffer.byteLength(squirrelReleases),
+  macIntegritySha256,
+  squirrelReleasesSha256,
   ...overrides,
 });
 
@@ -116,6 +122,23 @@ test('rejects sidecar and updater evidence that does not match assets', () => {
   assert.throws(
     () => build({ squirrelReleases: 'missing package' }),
     /does not reference/,
+  );
+  const sameLengthSidecar = macIntegrityContent.replace('  "schema"', ' \t"schema"');
+  assert.equal(Buffer.byteLength(sameLengthSidecar), Buffer.byteLength(macIntegrityContent));
+  assert.throws(
+    () => build({
+      macIntegritySha256: createHash('sha256').update(sameLengthSidecar).digest('hex'),
+    }),
+    /content does not match/,
+  );
+  const sameLengthReleases = squirrelReleases.replace('hash', 'HASH');
+  assert.equal(Buffer.byteLength(sameLengthReleases), Buffer.byteLength(squirrelReleases));
+  assert.throws(
+    () => build({
+      squirrelReleases: sameLengthReleases,
+      squirrelReleasesSha256: createHash('sha256').update(sameLengthReleases).digest('hex'),
+    }),
+    /content does not match/,
   );
   assert.throws(
     () => build({

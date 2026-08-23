@@ -66,6 +66,9 @@ jobs:
           RELEASE_TAG: v${{ steps.params.outputs.version }}
         run: node .github/scripts/check-release-tombstone.mjs --tag "$RELEASE_TAG"
 
+      - name: Verify release workflow contracts
+        run: node --test .github/scripts/*.test.mjs
+
   # ============================================
   # macOS Build + Submit Signed DMG
   # ============================================
@@ -490,6 +493,34 @@ jobs:
             exit 1
           fi
 
+          EXPECTED_FILES=(
+            "${DMG_FILES[@]}"
+            "${ZIP_FILES[@]}"
+            "${SETUP_FILES[@]}"
+            "${NUPKG_FILES[@]}"
+            "${INTEGRITY_FILES[@]}"
+            artifacts/release-windows-x64/RELEASES
+          )
+          UNEXPECTED_FILES="$(comm -13 \
+            <(printf '%s\n' "${EXPECTED_FILES[@]}" | LC_ALL=C sort) \
+            <(find artifacts -type f -print | LC_ALL=C sort))"
+          if [[ -n "$UNEXPECTED_FILES" ]]; then
+            echo "::error::Unexpected file found in final release artifact manifest"
+            echo "$UNEXPECTED_FILES"
+            exit 1
+          fi
+
+          DUPLICATE_BASENAMES="$({
+            while IFS= read -r FILE; do
+              basename "$FILE"
+            done < <(find artifacts -type f)
+          } | LC_ALL=C sort | uniq -d)"
+          if [[ -n "$DUPLICATE_BASENAMES" ]]; then
+            echo "::error::Duplicate release asset basenames are forbidden"
+            echo "$DUPLICATE_BASENAMES"
+            exit 1
+          fi
+
       - name: Freeze macOS release digests for downstream draft verification
         id: mac_release_digests
         shell: bash
@@ -507,35 +538,6 @@ jobs:
             echo "mac_dmg_sha256=$(sha256sum "${DMG_FILES[0]}" | awk '{print $1}')"
             echo "mac_zip_sha256=$(sha256sum "${ZIP_FILES[0]}" | awk '{print $1}')"
           } >> "$GITHUB_OUTPUT"
-
-          mapfile -t ALL_FILES < <(find artifacts -type f | sort)
-          EXPECTED_FILES=(
-            "${DMG_FILES[@]}"
-            "${ZIP_FILES[@]}"
-            "${SETUP_FILES[@]}"
-            "${NUPKG_FILES[@]}"
-            "${INTEGRITY_FILES[@]}"
-            artifacts/release-windows-x64/RELEASES
-          )
-          UNEXPECTED_FILES="$(comm -13 \
-            <(printf '%s\n' "${EXPECTED_FILES[@]}" | sort) \
-            <(printf '%s\n' "${ALL_FILES[@]}" | sort))"
-          if [[ -n "$UNEXPECTED_FILES" ]]; then
-            echo "::error::Unexpected file found in final release artifact manifest"
-            echo "$UNEXPECTED_FILES"
-            exit 1
-          fi
-
-          DUPLICATE_BASENAMES="$({
-            while IFS= read -r FILE; do
-              basename "$FILE"
-            done < <(find artifacts -type f)
-          } | sort | uniq -d)"
-          if [[ -n "$DUPLICATE_BASENAMES" ]]; then
-            echo "::error::Duplicate release asset basenames are forbidden"
-            echo "$DUPLICATE_BASENAMES"
-            exit 1
-          fi
 
       - name: List final release artifacts
         run: find artifacts -type f | sort
@@ -809,7 +811,7 @@ jobs:
   # Publish (convert draft → live)
   # ============================================
   publish-release:
-    needs: [prepare, verify-draft-macos, verify-draft-windows]
+    needs: [prepare, create-release-draft, verify-draft-macos, verify-draft-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -829,9 +831,57 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: v${{ needs.prepare.outputs.version }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
         run: |
-          RELEASE_ID="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq '.databaseId')"
+          set -euo pipefail
+          PRE_RELEASE_JSON="$RUNNER_TEMP/flowzero-release-before-publish.json"
+          PRE_IDENTITY_JSON="$RUNNER_TEMP/flowzero-release-identity-before-publish.json"
+          POST_RELEASE_JSON="$RUNNER_TEMP/flowzero-release-after-publish.json"
+          POST_IDENTITY_JSON="$RUNNER_TEMP/flowzero-release-identity-after-publish.json"
+
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$PRE_RELEASE_JSON"
+          node .github/scripts/release-asset-identity.mjs \
+            --release-json "$PRE_RELEASE_JSON" \
+            --expected-tag "$RELEASE_TAG" \
+            --expected-draft true \
+            --output "$PRE_IDENTITY_JSON"
+
+          while IFS=$'\t' read -r ASSET_NAME ASSET_SIZE ASSET_SHA256; do
+            read -r R2_SIZE R2_SHA256 < <(
+              aws s3api head-object \
+                --bucket "$R2_BUCKET" \
+                --key "releases/$RELEASE_TAG/$ASSET_NAME" \
+                --endpoint-url "$R2_ENDPOINT" \
+                --query '[ContentLength,Metadata.sha256]' \
+                --output text
+            )
+            if [[ "$R2_SIZE" != "$ASSET_SIZE" || "$R2_SHA256" != "$ASSET_SHA256" ]]; then
+              echo "::error::GitHub draft asset no longer matches immutable R2 evidence: $ASSET_NAME"
+              exit 1
+            fi
+          done < <(jq -r '.assets[] | [.name, (.size | tostring), .sha256] | @tsv' "$PRE_IDENTITY_JSON")
+
+          RELEASE_ID="$(jq -r '.id' "$PRE_RELEASE_JSON")"
+          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::GitHub draft release id is invalid"
+            exit 1
+          fi
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false > /dev/null
+
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$POST_RELEASE_JSON"
+          node .github/scripts/release-asset-identity.mjs \
+            --release-json "$POST_RELEASE_JSON" \
+            --expected-tag "$RELEASE_TAG" \
+            --expected-draft false \
+            --output "$POST_IDENTITY_JSON"
+          if [[ "$(jq -r '.fingerprint' "$PRE_IDENTITY_JSON")" != "$(jq -r '.fingerprint' "$POST_IDENTITY_JSON")" ]]; then
+            echo "::error::GitHub release asset identity changed while publishing"
+            exit 1
+          fi
           echo "Published release $RELEASE_TAG (draft to live)"
 
   # ============================================
@@ -853,7 +903,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify channel manifest generator
-        run: node --test .github/scripts/generate-update-channel-manifest.test.mjs
+        run: node --test .github/scripts/*.test.mjs
 
       - name: Promote verified release
         uses: ./.github/actions/promote-update-channel
