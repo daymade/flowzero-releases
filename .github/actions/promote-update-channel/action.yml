@@ -99,17 +99,15 @@ runs:
             echo "::error::allow-downgrade is not valid for no_release"
             exit 1
           fi
-          if [[ "$UPDATE_CHANNEL" == 'beta' ]]; then
-            PUBLISHED_TAG="$(
-              gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-                --jq 'map(select(.draft == false and .prerelease == true))[0].tag_name // ""'
-            )"
-          else
-            PUBLISHED_TAG="$(
-              gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-                --jq 'map(select(.draft == false and .prerelease == false))[0].tag_name // ""'
-            )"
-          fi
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            > "$WORK_DIR/tinkle_all-published-releases.json"
+          PUBLISHED_TAG="$(
+            node \
+              "$GITHUB_ACTION_PATH/../../scripts/select-published-release-tag.mjs" \
+              --releases-json "$WORK_DIR/tinkle_all-published-releases.json" \
+              --channel "$UPDATE_CHANNEL"
+          )"
           if [[ -n "$PUBLISHED_TAG" ]]; then
             echo "::error::Refusing to clear $UPDATE_CHANNEL; published release $PUBLISHED_TAG exists"
             exit 1

@@ -46,6 +46,55 @@ test('release mirrors use atomic create-only writes for immutable asset keys', a
   assert.ok(firstPut > versioningGate);
 });
 
+test('prepare rejects non-channel tags before any build can start', async () => {
+  const workflow = await readFile(
+    new URL('../workflows/release.yml', import.meta.url),
+    'utf8',
+  );
+  const tombstoneGate = workflow.indexOf('- name: Reject permanently withdrawn versions');
+  const channelGate = workflow.indexOf('- name: Validate release channel contract');
+  const workflowContracts = workflow.indexOf('- name: Verify release workflow contracts');
+  const firstBuild = workflow.indexOf('  build-macos:');
+  assert.ok(tombstoneGate >= 0);
+  assert.ok(channelGate > tombstoneGate);
+  assert.ok(workflowContracts > channelGate);
+  assert.ok(firstBuild > workflowContracts);
+  assert.match(
+    workflow.slice(channelGate, workflowContracts),
+    /assert-channel-version-forward\.mjs[\s\S]*--channel "\$RELEASE_CHANNEL"[\s\S]*--target-tag "\$RELEASE_TAG"/u,
+  );
+
+  const validator = new URL('./assert-channel-version-forward.mjs', import.meta.url);
+  const validBeta = spawnSync(process.execPath, [
+    validator.pathname,
+    '--channel', 'beta',
+    '--target-tag', 'v1.2.3-beta.8',
+    '--allow-downgrade', 'false',
+  ], { encoding: 'utf8' });
+  assert.equal(validBeta.status, 0, validBeta.stderr);
+  const invalidCandidate = spawnSync(process.execPath, [
+    validator.pathname,
+    '--channel', 'beta',
+    '--target-tag', 'v1.2.3-rc.1',
+    '--allow-downgrade', 'false',
+  ], { encoding: 'utf8' });
+  assert.notEqual(invalidCandidate.status, 0);
+  assert.match(invalidCandidate.stderr, /does not match the beta channel contract/u);
+});
+
+test('no-release checks every GitHub Releases page before clearing a channel', async () => {
+  const action = await readFile(
+    new URL('../actions/promote-update-channel/action.yml', import.meta.url),
+    'utf8',
+  );
+  assert.match(action, /gh api --paginate --slurp[\s\S]*releases\?per_page=100/u);
+  assert.match(action, /select-published-release-tag\.mjs/u);
+  assert.doesNotMatch(
+    action,
+    /gh api "repos\/\$GITHUB_REPOSITORY\/releases\?per_page=100"/u,
+  );
+});
+
 test('artifact validation and digest freezing execute in independent shell scopes', async () => {
   const workflow = await readFile(
     new URL('../workflows/release.yml', import.meta.url),

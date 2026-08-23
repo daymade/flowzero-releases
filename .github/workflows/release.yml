@@ -66,6 +66,16 @@ jobs:
           RELEASE_TAG: v${{ steps.params.outputs.version }}
         run: node .github/scripts/check-release-tombstone.mjs --tag "$RELEASE_TAG"
 
+      - name: Validate release channel contract
+        env:
+          RELEASE_TAG: v${{ steps.params.outputs.version }}
+          RELEASE_CHANNEL: ${{ contains(steps.params.outputs.version, '-') && 'beta' || 'stable' }}
+        run: |
+          node .github/scripts/assert-channel-version-forward.mjs \
+            --channel "$RELEASE_CHANNEL" \
+            --target-tag "$RELEASE_TAG" \
+            --allow-downgrade false
+
       - name: Verify release workflow contracts
         run: node --test .github/scripts/*.test.mjs
 
