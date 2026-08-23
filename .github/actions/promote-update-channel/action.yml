@@ -122,6 +122,10 @@ runs:
             echo "::error::release-tag is required for published state"
             exit 1
           fi
+          if [[ -z "${ALIYUN_OSS_PUBLIC_BASE_URL:-}" ]]; then
+            echo "::error::Missing required published-channel configuration: ALIYUN_OSS_PUBLIC_BASE_URL"
+            exit 1
+          fi
 
           node \
             "$GITHUB_ACTION_PATH/../../scripts/check-release-tombstone.mjs" \
@@ -165,6 +169,27 @@ runs:
             )
             if [[ "$R2_SIZE" != "$ASSET_SIZE" || "$R2_SHA256" != "$ASSET_SHA256" ]]; then
               echo "::error::Published GitHub asset does not match immutable R2 evidence: $ASSET_NAME"
+              exit 1
+            fi
+            R2_PUBLIC_READBACK="$WORK_DIR/tinkle_r2-public-readback-$RANDOM"
+            OSS_PUBLIC_READBACK="$WORK_DIR/tinkle_oss-public-readback-$RANDOM"
+            curl --fail --silent --show-error --location --retry 4 --retry-all-errors \
+              "${R2_PUBLIC_BASE_URL%/}/releases/$RELEASE_TAG/$ASSET_NAME" \
+              --output "$R2_PUBLIC_READBACK"
+            curl --fail --silent --show-error --location --retry 4 --retry-all-errors \
+              "${ALIYUN_OSS_PUBLIC_BASE_URL%/}/releases/$RELEASE_TAG/$ASSET_NAME" \
+              --output "$OSS_PUBLIC_READBACK"
+            R2_PUBLIC_SIZE="$(stat -c '%s' "$R2_PUBLIC_READBACK")"
+            OSS_PUBLIC_SIZE="$(stat -c '%s' "$OSS_PUBLIC_READBACK")"
+            R2_PUBLIC_SHA256="$(sha256sum "$R2_PUBLIC_READBACK" | awk '{print $1}')"
+            OSS_PUBLIC_SHA256="$(sha256sum "$OSS_PUBLIC_READBACK" | awk '{print $1}')"
+            rm -f "$R2_PUBLIC_READBACK" "$OSS_PUBLIC_READBACK"
+            if [[ "$R2_PUBLIC_SIZE" != "$ASSET_SIZE" || "$R2_PUBLIC_SHA256" != "$ASSET_SHA256" ]]; then
+              echo "::error::Published GitHub asset does not match public R2 bytes: $ASSET_NAME"
+              exit 1
+            fi
+            if [[ "$OSS_PUBLIC_SIZE" != "$ASSET_SIZE" || "$OSS_PUBLIC_SHA256" != "$ASSET_SHA256" ]]; then
+              echo "::error::Published GitHub asset does not match public OSS bytes: $ASSET_NAME"
               exit 1
             fi
           done < <(jq -r '.assets[] | [.name, (.size | tostring), .sha256] | @tsv' "$WORK_DIR/release-asset-identity.json")

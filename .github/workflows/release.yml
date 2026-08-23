@@ -488,6 +488,9 @@ jobs:
     steps:
       - name: Checkout release infrastructure
         uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
 
       # Stage 1 intentionally retains an unstapled DMG with the same basename as
       # the final DMG. Only final artifacts may enter the release upload tree.
@@ -715,6 +718,9 @@ jobs:
     steps:
       - name: Checkout release infrastructure
         uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
 
       - name: Download macOS assets from the GitHub draft
         env:
@@ -1028,3 +1034,4 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET: flowzero-releases
           R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
+          ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com

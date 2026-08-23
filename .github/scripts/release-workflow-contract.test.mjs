@@ -373,6 +373,44 @@ test('channel ordering is checked before immutable writes in standard and manual
   );
 });
 
+test('manual dispatch always executes privileged release infrastructure from main', async () => {
+  const workflow = await readFile(
+    new URL('../workflows/release.yml', import.meta.url),
+    'utf8',
+  );
+  for (const [jobName, nextJobName] of [
+    ['  create-release-draft:', '  verify-draft-macos:'],
+    ['  verify-draft-macos:', '  verify-draft-windows:'],
+    ['  promote-update-channel:', null],
+  ]) {
+    const start = workflow.indexOf(jobName);
+    const end = nextJobName ? workflow.indexOf(nextJobName, start + jobName.length) : workflow.length;
+    assert.ok(start >= 0 && end > start, `missing job block: ${jobName}`);
+    assert.match(
+      workflow.slice(start, end),
+      /- name: Checkout release infrastructure\n\s+uses: actions\/checkout@v4\n\s+with:\n\s+ref: main\n\s+persist-credentials: false/u,
+    );
+  }
+});
+
+test('channel CAS requires contemporaneous full public bytes from both mirrors', async () => {
+  const [action, release, mirror] = await Promise.all([
+    readFile(new URL('../actions/promote-update-channel/action.yml', import.meta.url), 'utf8'),
+    readFile(new URL('../workflows/release.yml', import.meta.url), 'utf8'),
+    readFile(new URL('../workflows/mirror-published-release.yml', import.meta.url), 'utf8'),
+  ]);
+  const r2Readback = action.indexOf('${R2_PUBLIC_BASE_URL%/}/releases/$RELEASE_TAG/$ASSET_NAME');
+  const ossReadback = action.indexOf('${ALIYUN_OSS_PUBLIC_BASE_URL%/}/releases/$RELEASE_TAG/$ASSET_NAME');
+  const currentPut = action.indexOf('--key "$CURRENT_KEY"', ossReadback);
+  assert.ok(r2Readback >= 0);
+  assert.ok(ossReadback > r2Readback);
+  assert.ok(currentPut > ossReadback);
+  assert.match(action, /Published GitHub asset does not match public R2 bytes/u);
+  assert.match(action, /Published GitHub asset does not match public OSS bytes/u);
+  assert.match(release, /Promote verified release[\s\S]*ALIYUN_OSS_PUBLIC_BASE_URL:/u);
+  assert.match(mirror, /Promote mirrored release[\s\S]*ALIYUN_OSS_PUBLIC_BASE_URL:/u);
+});
+
 test('immutable channel snapshots are conditional while current.json remains the sole mutable pointer', async () => {
   const action = await readFile(
     new URL('../actions/promote-update-channel/action.yml', import.meta.url),

@@ -114,6 +114,7 @@ https://github.com/daymade/flowzero-releases/issues
 - Releases are built by GitHub Actions.
 - Published artifacts are uploaded from CI jobs.
 - The exact release manifest is mirrored to R2 and Beijing OSS, then verified through both public origins before the GitHub release draft is created.
+- The channel pointer advances only after the live GitHub identity and the complete public bytes from both R2 and Beijing OSS are reverified in the same serialized channel run.
 - A release becomes visible to automatic update clients only after the macOS and Windows draft assets pass verification, the GitHub draft is published, and the channel pointer is promoted. Re-running `Mirror Published Release` repairs or explicitly rolls back that pointer without rebuilding binaries; its `mirror_assets` input controls whether already-verified binary mirrors are rechecked.
 - The final notarized macOS ZIP receives a generated SHA-512 integrity sidecar before mirroring; clients consume channel metadata from the update service and stream the versioned ZIP from the mirror.
 - macOS artifacts are signed and notarized before publishing.
