@@ -33,6 +33,7 @@ jobs:
     timeout-minutes: 120
     concurrency:
       group: flowzero-update-channel-${{ inputs.channel }}
+      queue: max
       cancel-in-progress: false
     steps:
       - name: Checkout release infrastructure
@@ -58,6 +59,44 @@ jobs:
             "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --dir artifacts/published-release
+
+      - name: Validate immutable published asset identity before mirror writes
+        if: ${{ inputs.mirror_assets }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          RELEASE_JSON="$RUNNER_TEMP/tinkle_flowzero-published-release.json"
+          IDENTITY_JSON="$RUNNER_TEMP/tinkle_flowzero-published-release-identity.json"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            > "$RELEASE_JSON"
+          node .github/scripts/release-asset-identity.mjs \
+            --release-json "$RELEASE_JSON" \
+            --expected-tag "$RELEASE_TAG" \
+            --expected-draft false \
+            --expected-immutable true \
+            --output "$IDENTITY_JSON"
+          gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null
+
+          ACTUAL_NAMES="$RUNNER_TEMP/tinkle_flowzero-actual-release-assets.txt"
+          EXPECTED_NAMES="$RUNNER_TEMP/tinkle_flowzero-expected-release-assets.txt"
+          find artifacts/published-release -maxdepth 1 -type f -exec basename {} \; \
+            | LC_ALL=C sort > "$ACTUAL_NAMES"
+          jq -r '.assets[].name' "$IDENTITY_JSON" | LC_ALL=C sort > "$EXPECTED_NAMES"
+          if ! cmp -s "$ACTUAL_NAMES" "$EXPECTED_NAMES"; then
+            echo "::error::Downloaded release assets do not match the immutable six-role identity"
+            diff -u "$EXPECTED_NAMES" "$ACTUAL_NAMES" || true
+            exit 1
+          fi
+          while IFS=$'\t' read -r ASSET_NAME ASSET_SIZE ASSET_SHA256; do
+            ASSET_PATH="artifacts/published-release/$ASSET_NAME"
+            if [[ "$(stat -c '%s' "$ASSET_PATH")" != "$ASSET_SIZE" || "$(sha256sum "$ASSET_PATH" | awk '{print $1}')" != "$ASSET_SHA256" ]]; then
+              echo "::error::Downloaded release asset bytes do not match GitHub digest: $ASSET_NAME"
+              exit 1
+            fi
+          done < <(jq -r '.assets[] | [.name, (.size | tostring), .sha256] | @tsv' "$IDENTITY_JSON")
 
       - name: Mirror and verify published assets
         if: ${{ inputs.mirror_assets }}

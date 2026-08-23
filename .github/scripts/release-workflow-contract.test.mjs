@@ -137,6 +137,9 @@ test('publication and promotion rebind every GitHub asset to immutable R2 eviden
   assert.ok(r2Evidence > preIdentity);
   assert.ok(patch > r2Evidence);
   assert.ok(postIdentity > patch);
+  assert.match(publish, /--expected-immutable false/u);
+  assert.match(publish, /--expected-immutable true/u);
+  assert.match(publish, /gh release verify "\$RELEASE_TAG"/u);
   assert.match(publish, /GitHub release asset identity changed while publishing/u);
 
   const promotion = await readFile(
@@ -146,6 +149,14 @@ test('publication and promotion rebind every GitHub asset to immutable R2 eviden
   assert.match(promotion, /Published GitHub asset does not match immutable R2 evidence/u);
   assert.match(promotion, /GitHub release asset identity changed during channel promotion/u);
   assert.match(promotion, /release-asset-identity\.mjs/u);
+  assert.match(promotion, /--expected-immutable true/u);
+  assert.match(promotion, /gh release verify "\$RELEASE_TAG"/u);
+
+  const immutablePrecheck = workflow.indexOf('- name: Require GitHub immutable releases');
+  const createDraft = workflow.indexOf('- name: Create Release (draft)');
+  assert.ok(immutablePrecheck >= 0);
+  assert.ok(createDraft > immutablePrecheck);
+  assert.match(workflow.slice(immutablePrecheck, createDraft), /X-GitHub-Api-Version: 2026-03-10/u);
 });
 
 test('the real publish shell blocks an R2 mismatch before the GitHub PATCH', async () => {
@@ -170,8 +181,8 @@ test('the real publish shell blocks an R2 mismatch before the GitHub PATCH', asy
     state: 'uploaded',
     digest: `sha256:${String(index + 1).repeat(64)}`,
   }));
-  const preRelease = { id: 777, tag_name: tag, draft: true, assets };
-  const postRelease = { ...preRelease, draft: false };
+  const preRelease = { id: 777, tag_name: tag, draft: true, immutable: false, assets };
+  const postRelease = { ...preRelease, draft: false, immutable: true };
   const prePath = path.join(root, 'tinkle_pre_release.json');
   const postPath = path.join(root, 'tinkle_post_release.json');
   const statePath = path.join(root, 'tinkle_release_state');
@@ -190,6 +201,7 @@ test('the real publish shell blocks an R2 mismatch before the GitHub PATCH', asy
     await writeFile(fakeGhPath, `
 const fs = require('node:fs');
 const args = process.argv.slice(2);
+if (args[0] === 'release' && args[1] === 'verify') process.exit(0);
 if (args[0] !== 'api') process.exit(90);
 if (args.includes('--method')) {
   fs.appendFileSync(process.env.TINKLE_PATCH_LOG, args.join(' ') + '\\n');
@@ -225,6 +237,7 @@ aws() { node "$TINKLE_FAKE_AWS" "$@"; }
       BASH_ENV: bashEnvPath,
       GH_TOKEN: 'fixture-token',
       RELEASE_TAG: tag,
+      RELEASE_ID: '777',
       GITHUB_REPOSITORY: 'daymade/flowzero-releases',
       RUNNER_TEMP: root,
       AWS_ACCESS_KEY_ID: 'fixture-access',
@@ -273,6 +286,9 @@ test('every channel writer uses the same non-cancelling concurrency group', asyn
   for (const workflow of [mirror, initialize]) {
     assert.match(workflow, /group: flowzero-update-channel-\$\{\{ inputs\.channel \}\}[\s\S]*cancel-in-progress: false/u);
   }
+  for (const workflow of [release, mirror, initialize]) {
+    assert.match(workflow, /group: flowzero-update-channel-[^\n]+\n\s+queue: max\n\s+cancel-in-progress: false/u);
+  }
 });
 
 test('immutable channel snapshots are conditional while current.json remains the sole mutable pointer', async () => {
@@ -283,5 +299,7 @@ test('immutable channel snapshots are conditional while current.json remains the
 
   assert.match(action, /--key "\$IMMUTABLE_KEY"[\s\S]*--if-none-match '\*'/);
   assert.match(action, /Immutable channel snapshot conflict after concurrent write/);
-  assert.match(action, /aws s3 cp[\s\S]*"s3:\/\/\$R2_BUCKET\/\$CURRENT_KEY"/);
+  assert.match(action, /--key "\$CURRENT_KEY"[\s\S]*"\$\{CURRENT_CONDITION_ARGS\[@\]\}"/u);
+  assert.match(action, /CURRENT_CONDITION_ARGS\+=\(--if-match "\$CURRENT_ETAG"\)/u);
+  assert.match(action, /CURRENT_CONDITION_ARGS\+=\(--if-none-match '\*'\)/u);
 });

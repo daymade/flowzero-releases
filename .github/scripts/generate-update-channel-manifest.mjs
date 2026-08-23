@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { verifySquirrelReleases } from './verify-squirrel-releases.mjs';
 
 export const SCHEMA = 'flowzero.update_channel_manifest.v1';
 
@@ -104,6 +105,8 @@ export function buildChannelManifest({
   squirrelReleasesByteLength,
   macIntegritySha256,
   squirrelReleasesSha256,
+  squirrelNupkgName,
+  squirrelNupkgBytes,
 }) {
   if (!release || typeof release !== 'object' || Array.isArray(release)) {
     throw new Error('Release metadata must be an object');
@@ -189,9 +192,24 @@ export function buildChannelManifest({
   if (nupkgAssets.length !== 1) {
     throw new Error(`Expected exactly one nupkg asset, found ${nupkgAssets.length}`);
   }
-  if (!squirrelReleases.includes(nupkgAssets[0].name)) {
-    throw new Error('RELEASES does not reference the published nupkg');
+  const nupkgAsset = nupkgAssets[0];
+  if (squirrelNupkgName !== nupkgAsset.name) {
+    throw new Error('Downloaded nupkg name does not match the published release asset');
   }
+  if (!Buffer.isBuffer(squirrelNupkgBytes) || squirrelNupkgBytes.length === 0) {
+    throw new Error('Downloaded nupkg bytes must be non-empty');
+  }
+  if (
+    nupkgAsset.size !== squirrelNupkgBytes.length
+    || nupkgAsset.sha256 !== createHash('sha256').update(squirrelNupkgBytes).digest('hex')
+  ) {
+    throw new Error('Downloaded nupkg bytes do not match the release asset');
+  }
+  verifySquirrelReleases({
+    releasesText: squirrelReleases,
+    nupkgName: squirrelNupkgName,
+    nupkgBytes: squirrelNupkgBytes,
+  });
 
   return {
     schema: SCHEMA,
@@ -212,6 +230,7 @@ function parseArguments(argv) {
     '--channel',
     '--mac-integrity',
     '--releases',
+    '--nupkg',
     '--state',
     '--output',
   ]);
@@ -223,7 +242,7 @@ function parseArguments(argv) {
       throw new Error(
         'Usage: generate-update-channel-manifest '
         + '--release-json <file> --channel <stable|beta> '
-        + '--mac-integrity <file> --releases <file> --output <file>',
+        + '--mac-integrity <file> --releases <file> --nupkg <file> --output <file>',
       );
     }
     if (Object.hasOwn(values, key)) throw new Error(`Duplicate argument: ${key}`);
@@ -242,6 +261,7 @@ function parseArguments(argv) {
     '--release-json',
     '--mac-integrity',
     '--releases',
+    '--nupkg',
   ];
   if (state === 'published') {
     for (const key of releaseArguments) {
@@ -268,6 +288,8 @@ export async function main(argv = process.argv.slice(2)) {
     const releaseBuffer = await readFile(path.resolve(args['--release-json']));
     const macIntegrityBuffer = await readFile(path.resolve(args['--mac-integrity']));
     const releasesBuffer = await readFile(path.resolve(args['--releases']));
+    const nupkgPath = path.resolve(args['--nupkg']);
+    const nupkgBuffer = await readFile(nupkgPath);
     manifest = buildChannelManifest({
       release: JSON.parse(releaseBuffer.toString('utf8')),
       channel: args['--channel'],
@@ -277,6 +299,8 @@ export async function main(argv = process.argv.slice(2)) {
       squirrelReleasesByteLength: releasesBuffer.byteLength,
       macIntegritySha256: createHash('sha256').update(macIntegrityBuffer).digest('hex'),
       squirrelReleasesSha256: createHash('sha256').update(releasesBuffer).digest('hex'),
+      squirrelNupkgName: path.basename(nupkgPath),
+      squirrelNupkgBytes: nupkgBuffer,
     });
   }
   const output = path.resolve(args['--output']);

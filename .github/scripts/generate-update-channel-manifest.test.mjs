@@ -11,6 +11,9 @@ import {
 const updaterZip = 'Flowzero-darwin-arm64-0.1.2-beta.7.zip';
 const dmg = 'Flowzero-0.1.2-beta.7-arm64.dmg';
 const nupkg = 'Flowzero-0.1.2-beta7-full.nupkg';
+const nupkgBytes = Buffer.from('fixture nupkg bytes', 'utf8');
+const nupkgSha256 = createHash('sha256').update(nupkgBytes).digest('hex');
+const nupkgSha1 = createHash('sha1').update(nupkgBytes).digest('hex');
 const macUpdateIntegrity = {
   schema: 'flowzero.macos_update_integrity.v1',
   version: '0.1.2-beta.7',
@@ -26,7 +29,7 @@ const macUpdateIntegrity = {
     sha256: '5'.repeat(64),
   },
 };
-const squirrelReleases = `hash ${nupkg} 200\n`;
+const squirrelReleases = `${nupkgSha1} ${nupkg} ${nupkgBytes.length}\n`;
 const macIntegrityContent = `${JSON.stringify(macUpdateIntegrity, null, 2)}\n`;
 const macIntegritySha256 = createHash('sha256').update(macIntegrityContent).digest('hex');
 const squirrelReleasesSha256 = createHash('sha256').update(squirrelReleases).digest('hex');
@@ -46,8 +49,8 @@ const release = {
     {
       name: nupkg,
       content_type: 'application/octet-stream',
-      size: 200,
-      digest: `sha256:${'2'.repeat(64)}`,
+      size: nupkgBytes.length,
+      digest: `sha256:${nupkgSha256}`,
     },
     {
       name: dmg,
@@ -79,6 +82,8 @@ const build = (overrides = {}) => buildChannelManifest({
   squirrelReleasesByteLength: Buffer.byteLength(squirrelReleases),
   macIntegritySha256,
   squirrelReleasesSha256,
+  squirrelNupkgName: nupkg,
+  squirrelNupkgBytes: nupkgBytes,
   ...overrides,
 });
 
@@ -89,7 +94,7 @@ test('generates a deterministic published channel snapshot', () => {
   assert.equal(manifest.channel, 'beta');
   assert.equal(manifest.state, 'published');
   assert.equal(manifest.tag, release.tag_name);
-  assert.equal(manifest.assets.find((asset) => asset.name === nupkg)?.sha256, '2'.repeat(64));
+  assert.equal(manifest.assets.find((asset) => asset.name === nupkg)?.sha256, nupkgSha256);
   assert.deepEqual(manifest.mac_update_integrity, macUpdateIntegrity);
   assert.equal(manifest.squirrel_releases, squirrelReleases);
 });
@@ -121,7 +126,7 @@ test('rejects sidecar and updater evidence that does not match assets', () => {
   );
   assert.throws(
     () => build({ squirrelReleases: 'missing package' }),
-    /does not reference/,
+    /record must contain|exactly one/,
   );
   const sameLengthSidecar = macIntegrityContent.replace('  "schema"', ' \t"schema"');
   assert.equal(Buffer.byteLength(sameLengthSidecar), Buffer.byteLength(macIntegrityContent));
@@ -131,7 +136,7 @@ test('rejects sidecar and updater evidence that does not match assets', () => {
     }),
     /content does not match/,
   );
-  const sameLengthReleases = squirrelReleases.replace('hash', 'HASH');
+  const sameLengthReleases = squirrelReleases.replace(nupkgSha1[0], nupkgSha1[0] === 'a' ? 'b' : 'a');
   assert.equal(Buffer.byteLength(sameLengthReleases), Buffer.byteLength(squirrelReleases));
   assert.throws(
     () => build({

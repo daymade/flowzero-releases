@@ -70,7 +70,7 @@ runs:
           --user-agent flowzero-release-ci
         )
 
-        OSS_VERSIONING_JSON="$RUNNER_TEMP/flowzero-oss-bucket-versioning.json"
+        OSS_VERSIONING_JSON="$RUNNER_TEMP/tinkle_flowzero-oss-bucket-versioning.json"
         "$OSSUTIL_BIN" api get-bucket-versioning \
           --bucket "$ALIYUN_OSS_BUCKET" \
           --output-format json \
@@ -289,8 +289,36 @@ runs:
             exit 1
           fi
 
-          # Authenticated metadata checks above are the checksum SSOT.
-          # Public probes validate transport without downloading the artifact.
+          R2_READBACK="$RUNNER_TEMP/tinkle_flowzero-r2-readback-$RANDOM"
+          OSS_READBACK="$RUNNER_TEMP/tinkle_flowzero-oss-readback-$RANDOM"
+          aws s3api get-object \
+            --bucket "$R2_BUCKET" \
+            --key "$OBJECT_KEY" \
+            --endpoint-url "$R2_ENDPOINT" \
+            "$R2_READBACK" \
+            > /dev/null
+          "$OSSUTIL_BIN" api get-object \
+            --bucket "$ALIYUN_OSS_BUCKET" \
+            --key "$OBJECT_KEY" \
+            --quiet \
+            "${OSSUTIL_ARGS[@]}" \
+            > "$OSS_READBACK"
+          R2_READBACK_SIZE="$(stat -c '%s' "$R2_READBACK")"
+          OSS_READBACK_SIZE="$(stat -c '%s' "$OSS_READBACK")"
+          R2_READBACK_SHA256="$(sha256sum "$R2_READBACK" | awk '{print $1}')"
+          OSS_READBACK_SHA256="$(sha256sum "$OSS_READBACK" | awk '{print $1}')"
+          rm -f "$R2_READBACK" "$OSS_READBACK"
+          if [[ "$R2_READBACK_SIZE" != "$LOCAL_SIZE" || "$R2_READBACK_SHA256" != "$LOCAL_SHA256" ]]; then
+            echo "::error::R2 authenticated byte readback failed for $ASSET_NAME"
+            exit 1
+          fi
+          if [[ "$OSS_READBACK_SIZE" != "$LOCAL_SIZE" || "$OSS_READBACK_SHA256" != "$LOCAL_SHA256" ]]; then
+            echo "::error::OSS authenticated byte readback failed for $ASSET_NAME"
+            exit 1
+          fi
+
+          # Full authenticated reads above establish stored-byte identity.
+          # Public probes below validate transport without another full download.
           verify_public_origin \
             r2 \
             "$R2_PUBLIC_BASE_URL/$OBJECT_KEY" \

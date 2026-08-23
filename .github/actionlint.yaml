@@ -1,0 +1,6 @@
+paths:
+  .github/workflows/**/*.{yml,yaml}:
+    ignore:
+      # GitHub Actions supports concurrency.queue as of 2026; actionlint 1.7.12
+      # still reports it as unknown (upstream issue rhysd/actionlint#680).
+      - 'unexpected key "queue" for "concurrency" section'

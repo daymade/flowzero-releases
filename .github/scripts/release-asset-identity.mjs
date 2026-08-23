@@ -69,6 +69,12 @@ export function buildReleaseAssetIdentity(release, options = {}) {
   ) {
     throw new Error(`Release draft state mismatch: expected ${options.expectedDraft}`);
   }
+  if (
+    typeof options.expectedImmutable === 'boolean'
+    && release.immutable !== options.expectedImmutable
+  ) {
+    throw new Error(`Release immutable state mismatch: expected ${options.expectedImmutable}`);
+  }
   if (!Array.isArray(release.assets)) {
     throw new Error('Release assets must be an array');
   }
@@ -98,6 +104,7 @@ export function buildReleaseAssetIdentity(release, options = {}) {
     schema: SCHEMA,
     tag: release.tag_name,
     draft: release.draft,
+    immutable: release.immutable,
     fingerprint: fingerprintAssets(assets),
     assets,
   };
@@ -108,6 +115,7 @@ function parseArguments(argv) {
     '--release-json',
     '--expected-tag',
     '--expected-draft',
+    '--expected-immutable',
     '--output',
   ]);
   const values = {};
@@ -118,11 +126,20 @@ function parseArguments(argv) {
     if (Object.hasOwn(values, key)) throw new Error(`Duplicate argument: ${key}`);
     values[key] = value;
   }
-  for (const required of ['--release-json', '--expected-tag', '--expected-draft', '--output']) {
+  for (const required of [
+    '--release-json',
+    '--expected-tag',
+    '--expected-draft',
+    '--expected-immutable',
+    '--output',
+  ]) {
     if (!values[required]) throw new Error(`Missing required argument: ${required}`);
   }
   if (!['true', 'false'].includes(values['--expected-draft'])) {
     throw new Error('--expected-draft must be true or false');
+  }
+  if (!['true', 'false'].includes(values['--expected-immutable'])) {
+    throw new Error('--expected-immutable must be true or false');
   }
   return values;
 }
@@ -133,6 +150,7 @@ export async function main(argv = process.argv.slice(2)) {
   const identity = buildReleaseAssetIdentity(release, {
     expectedTag: args['--expected-tag'],
     expectedDraft: args['--expected-draft'] === 'true',
+    expectedImmutable: args['--expected-immutable'] === 'true',
   });
   const output = path.resolve(args['--output']);
   await writeFile(output, `${JSON.stringify(identity, null, 2)}\n`, 'utf8');

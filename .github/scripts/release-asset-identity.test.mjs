@@ -15,6 +15,7 @@ const roles = [
 const release = {
   tag_name: 'v0.1.2-beta.7',
   draft: true,
+  immutable: false,
   assets: roles.map(([name, size, digit]) => ({
     name,
     size,
@@ -27,12 +28,28 @@ test('builds a deterministic exact release asset identity', () => {
   const identity = buildReleaseAssetIdentity(release, {
     expectedTag: release.tag_name,
     expectedDraft: true,
+    expectedImmutable: false,
   });
 
   assert.equal(identity.schema, SCHEMA);
   assert.equal(identity.assets.length, 6);
+  assert.equal(identity.immutable, false);
   assert.match(identity.fingerprint, /^[a-f0-9]{64}$/);
   assert.deepEqual(identity.assets.map((asset) => asset.name), roles.map(([name]) => name).sort());
+});
+
+test('rejects a release whose immutability does not match the lifecycle phase', () => {
+  assert.throws(
+    () => buildReleaseAssetIdentity(release, { expectedImmutable: true }),
+    /immutable state mismatch/,
+  );
+  assert.equal(
+    buildReleaseAssetIdentity({ ...release, draft: false, immutable: true }, {
+      expectedDraft: false,
+      expectedImmutable: true,
+    }).immutable,
+    true,
+  );
 });
 
 test('rejects missing, extra, duplicate, pending, and digestless assets', () => {

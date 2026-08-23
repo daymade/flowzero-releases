@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     concurrency:
       group: flowzero-update-channel-${{ inputs.channel }}
+      queue: max
       cancel-in-progress: false
     steps:
       - name: Checkout release infrastructure

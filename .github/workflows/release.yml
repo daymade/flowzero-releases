@@ -445,6 +445,7 @@ jobs:
     permissions:
       contents: write
     outputs:
+      release_id: ${{ steps.create_release.outputs.id }}
       mac_integrity_sha256: ${{ steps.mac_release_digests.outputs.mac_integrity_sha256 }}
       mac_dmg_sha256: ${{ steps.mac_release_digests.outputs.mac_dmg_sha256 }}
       mac_zip_sha256: ${{ steps.mac_release_digests.outputs.mac_zip_sha256 }}
@@ -466,6 +467,21 @@ jobs:
         with:
           name: release-windows-x64
           path: artifacts/release-windows-x64
+
+      - name: Require GitHub immutable releases
+        env:
+          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          IMMUTABLE_SETTINGS="$RUNNER_TEMP/tinkle_flowzero-immutable-release-settings.json"
+          gh api \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/immutable-releases" \
+            > "$IMMUTABLE_SETTINGS"
+          if [[ "$(jq -r '.enabled' "$IMMUTABLE_SETTINGS")" != 'true' ]]; then
+            echo "::error::GitHub immutable releases must be enabled before creating a release draft"
+            exit 1
+          fi
 
       - name: Generate macOS updater integrity metadata
         run: |
@@ -577,6 +593,7 @@ jobs:
           ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
 
       - name: Create Release (draft)
+        id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.prepare.outputs.version }}
@@ -609,19 +626,33 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: v${{ needs.prepare.outputs.version }}
+          RELEASE_ID: ${{ steps.create_release.outputs.id }}
         run: |
-          ASSET_NAMES="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
-          NUPKG_NAME="$(echo "$ASSET_NAMES" | grep '\.nupkg$' | head -1)"
-          if [ -z "$NUPKG_NAME" ]; then
-            echo "::error::No nupkg found in release assets"
+          set -euo pipefail
+          DRAFT_JSON="$RUNNER_TEMP/tinkle_flowzero-draft-release.json"
+          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::Draft release id is invalid"
             exit 1
           fi
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "RELEASES" --dir /tmp/verify-releases
-          if ! grep -q "$NUPKG_NAME" /tmp/verify-releases/RELEASES; then
-            echo "::error::RELEASES file does not reference $NUPKG_NAME"
-            cat /tmp/verify-releases/RELEASES
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$DRAFT_JSON"
+          if [[ "$(jq -r '.draft' "$DRAFT_JSON")" != 'true' || "$(jq -r '.tag_name' "$DRAFT_JSON")" != "$RELEASE_TAG" ]]; then
+            echo "::error::Release id does not identify the expected draft"
             exit 1
           fi
+          NUPKG_NAME="$(jq -r '[.assets[] | select(.state == "uploaded" and (.name | endswith(".nupkg")))] | if length == 1 then .[0].name else empty end' "$DRAFT_JSON")"
+          RELEASES_ID="$(jq -r '[.assets[] | select(.state == "uploaded" and .name == "RELEASES")] | if length == 1 then .[0].id else empty end' "$DRAFT_JSON")"
+          if [[ -z "$NUPKG_NAME" || ! "$RELEASES_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::Draft must contain exactly one uploaded nupkg and RELEASES asset"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/verify-releases"
+          gh api \
+            -H 'Accept: application/octet-stream' \
+            "repos/$GITHUB_REPOSITORY/releases/assets/$RELEASES_ID" \
+            > "$RUNNER_TEMP/verify-releases/RELEASES"
+          node .github/scripts/verify-squirrel-releases.mjs \
+            --releases "$RUNNER_TEMP/verify-releases/RELEASES" \
+            --nupkg "artifacts/release-windows-x64/$NUPKG_NAME"
           echo "RELEASES file correctly references $NUPKG_NAME"
 
       - name: Delete macOS build artifacts after draft upload
@@ -654,11 +685,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: v${{ needs.prepare.outputs.version }}
+          RELEASE_ID: ${{ needs.create-release-draft.outputs.release_id }}
         run: |
+          set -euo pipefail
           mkdir -p /tmp/verify-macos
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "*.dmg" --dir /tmp/verify-macos
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "*.zip" --dir /tmp/verify-macos
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "mac-update-integrity.json" --dir /tmp/verify-macos
+          DRAFT_JSON="$RUNNER_TEMP/tinkle_flowzero-verify-macos-release.json"
+          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::Draft release id is invalid"
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$DRAFT_JSON"
+          if [[ "$(jq -r '.draft' "$DRAFT_JSON")" != 'true' || "$(jq -r '.tag_name' "$DRAFT_JSON")" != "$RELEASE_TAG" ]]; then
+            echo "::error::Release id does not identify the expected draft"
+            exit 1
+          fi
+          jq -r '.assets[] | select(.state == "uploaded") | [.id, .name] | @tsv' "$DRAFT_JSON" \
+            | while IFS=$'\t' read -r ASSET_ID ASSET_NAME; do
+                case "$ASSET_NAME" in
+                  *.dmg|*.zip|mac-update-integrity.json)
+                    gh api \
+                      -H 'Accept: application/octet-stream' \
+                      "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" \
+                      > "/tmp/verify-macos/$ASSET_NAME"
+                    ;;
+                esac
+              done
 
           shopt -s nullglob
           DMG_FILES=(/tmp/verify-macos/*.dmg)
@@ -792,13 +843,33 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
           RELEASE_TAG: v${{ needs.prepare.outputs.version }}
+          RELEASE_ID: ${{ needs.create-release-draft.outputs.release_id }}
         shell: bash
         run: |
+          set -euo pipefail
           VERIFY_DIR="$RUNNER_TEMP/verify-windows"
           mkdir -p "$VERIFY_DIR"
-          gh release download "$RELEASE_TAG" --repo daymade/flowzero-releases --pattern "*-Setup.exe" --dir "$VERIFY_DIR"
-          gh release download "$RELEASE_TAG" --repo daymade/flowzero-releases --pattern "RELEASES" --dir "$VERIFY_DIR"
-          gh release download "$RELEASE_TAG" --repo daymade/flowzero-releases --pattern "*.nupkg" --dir "$VERIFY_DIR"
+          DRAFT_JSON="$RUNNER_TEMP/tinkle_flowzero-verify-windows-release.json"
+          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::Draft release id is invalid"
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$DRAFT_JSON"
+          if [[ "$(jq -r '.draft' "$DRAFT_JSON")" != 'true' || "$(jq -r '.tag_name' "$DRAFT_JSON")" != "$RELEASE_TAG" ]]; then
+            echo "::error::Release id does not identify the expected draft"
+            exit 1
+          fi
+          jq -r '.assets[] | select(.state == "uploaded") | [.id, .name] | @tsv' "$DRAFT_JSON" \
+            | while IFS=$'\t' read -r ASSET_ID ASSET_NAME; do
+                case "$ASSET_NAME" in
+                  *-Setup.exe|*.nupkg|RELEASES)
+                    gh api \
+                      -H 'Accept: application/octet-stream' \
+                      "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" \
+                      > "$VERIFY_DIR/$ASSET_NAME"
+                    ;;
+                esac
+              done
           echo "VERIFY_DIR=$VERIFY_DIR" >> "$GITHUB_ENV"
           ls -la "$VERIFY_DIR"
 
@@ -831,6 +902,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: v${{ needs.prepare.outputs.version }}
+          RELEASE_ID: ${{ needs.create-release-draft.outputs.release_id }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
@@ -838,16 +910,21 @@ jobs:
           R2_BUCKET: flowzero-releases
         run: |
           set -euo pipefail
-          PRE_RELEASE_JSON="$RUNNER_TEMP/flowzero-release-before-publish.json"
-          PRE_IDENTITY_JSON="$RUNNER_TEMP/flowzero-release-identity-before-publish.json"
-          POST_RELEASE_JSON="$RUNNER_TEMP/flowzero-release-after-publish.json"
-          POST_IDENTITY_JSON="$RUNNER_TEMP/flowzero-release-identity-after-publish.json"
+          PRE_RELEASE_JSON="$RUNNER_TEMP/tinkle_flowzero-release-before-publish.json"
+          PRE_IDENTITY_JSON="$RUNNER_TEMP/tinkle_flowzero-release-identity-before-publish.json"
+          POST_RELEASE_JSON="$RUNNER_TEMP/tinkle_flowzero-release-after-publish.json"
+          POST_IDENTITY_JSON="$RUNNER_TEMP/tinkle_flowzero-release-identity-after-publish.json"
 
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$PRE_RELEASE_JSON"
+          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::Draft release id is invalid"
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$PRE_RELEASE_JSON"
           node .github/scripts/release-asset-identity.mjs \
             --release-json "$PRE_RELEASE_JSON" \
             --expected-tag "$RELEASE_TAG" \
             --expected-draft true \
+            --expected-immutable false \
             --output "$PRE_IDENTITY_JSON"
 
           while IFS=$'\t' read -r ASSET_NAME ASSET_SIZE ASSET_SHA256; do
@@ -865,23 +942,24 @@ jobs:
             fi
           done < <(jq -r '.assets[] | [.name, (.size | tostring), .sha256] | @tsv' "$PRE_IDENTITY_JSON")
 
-          RELEASE_ID="$(jq -r '.id' "$PRE_RELEASE_JSON")"
-          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
-            echo "::error::GitHub draft release id is invalid"
+          if [[ "$(jq -r '.id' "$PRE_RELEASE_JSON")" != "$RELEASE_ID" ]]; then
+            echo "::error::GitHub draft release id changed"
             exit 1
           fi
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false > /dev/null
 
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$POST_RELEASE_JSON"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$POST_RELEASE_JSON"
           node .github/scripts/release-asset-identity.mjs \
             --release-json "$POST_RELEASE_JSON" \
             --expected-tag "$RELEASE_TAG" \
             --expected-draft false \
+            --expected-immutable true \
             --output "$POST_IDENTITY_JSON"
           if [[ "$(jq -r '.fingerprint' "$PRE_IDENTITY_JSON")" != "$(jq -r '.fingerprint' "$POST_IDENTITY_JSON")" ]]; then
             echo "::error::GitHub release asset identity changed while publishing"
             exit 1
           fi
+          gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null
           echo "Published release $RELEASE_TAG (draft to live)"
 
   # ============================================
@@ -894,6 +972,7 @@ jobs:
       contents: read
     concurrency:
       group: flowzero-update-channel-${{ needs.prepare.outputs.channel }}
+      queue: max
       cancel-in-progress: false
     steps:
       - name: Checkout release infrastructure
