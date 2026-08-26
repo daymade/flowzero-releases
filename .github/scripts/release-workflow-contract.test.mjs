@@ -247,13 +247,17 @@ test('ordering and current tombstone policy are checked before every external wr
   }
   assert.match(archiveScript, /assertCurrentReleaseTagAllowed/u);
   assert.match(workflow, /workflow_dispatch:/u);
+  assert.match(
+    workflow,
+    /run-name: release \$\{\{ github\.event\.client_payload\.intent\.release\.version \|\| inputs\.version \}\} \$\{\{ github\.event\.client_payload\.intent\.transaction_id \|\| inputs\.transaction_id \}\}/u,
+  );
   assert.match(workflow, /head_sha:/u);
   assert.match(workflow, /transaction_id:/u);
   assert.match(workflow, /platforms:/u);
   assert.match(workflow, /variant:/u);
   assert.match(
     workflow,
-    /group: release-transaction-\$\{\{ github\.event\.client_payload\.intent\.transaction_id \|\| inputs\.transaction_id \}\}/u,
+    /group: release-version-\$\{\{ github\.event\.client_payload\.intent\.release\.version \|\| inputs\.version \}\}/u,
   );
   assert.match(workflow, /queue: max/u);
   assert.match(workflow, /claim-release-transaction\.mjs/u);

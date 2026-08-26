@@ -147,7 +147,7 @@ export function claimReleaseTransaction(transaction, {
   const config = requiredEnvironment(env);
   const claim = buildTransactionOwnerClaim(transaction);
   const transactionHex = claim.transaction_id.slice('sha256:'.length);
-  const objectKey = `release-control/transactions/${transactionHex}/owner.json`;
+  const objectKey = `release-control/releases/${claim.intent.release.tag}/owner.json`;
   const claimBody = `${canonicalJson(claim)}\n`;
   const claimPath = path.join(config.RUNNER_TEMP, `flowzero-release-owner-${transactionHex}.json`);
   const existingPath = path.join(config.RUNNER_TEMP, `flowzero-release-owner-existing-${transactionHex}.json`);

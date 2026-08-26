@@ -73,6 +73,7 @@ test('creates one durable R2 owner with a conditional write and verifies readbac
   });
   assert.equal(result.isOwner, true);
   assert.equal(result.ownerRunId, '41');
+  assert.equal(result.objectKey, 'release-control/releases/v1.2.3-beta.4/owner.json');
   assert.ok(calls.some((args) => args.includes('--if-none-match') && args.includes('*')));
 });
 
