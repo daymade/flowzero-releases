@@ -30,15 +30,14 @@ export function verifySquirrelReleases({ releasesText, nupkgName, nupkgBytes }) 
   if (!SHA1_PATTERN.test(declaredSha1)) throw new Error('RELEASES SHA-1 is invalid');
   if (declaredName !== nupkgName) throw new Error('RELEASES filename does not exactly match nupkg');
   if (!/^\d+$/u.test(declaredSizeText)) throw new Error('RELEASES size is invalid');
-  const declaredSize = Number(declaredSizeText);
-  if (!Number.isSafeInteger(declaredSize) || declaredSize !== nupkgBytes.length) {
+  if (declaredSizeText !== String(nupkgBytes.length)) {
     throw new Error('RELEASES size does not match nupkg bytes');
   }
   const actualSha1 = createHash('sha1').update(nupkgBytes).digest('hex');
   if (declaredSha1.toLowerCase() !== actualSha1) {
     throw new Error('RELEASES SHA-1 does not match nupkg bytes');
   }
-  return { name: declaredName, size: declaredSize, sha1: actualSha1 };
+  return { name: declaredName, size: nupkgBytes.length, sha1: actualSha1 };
 }
 
 function parseArguments(argv) {

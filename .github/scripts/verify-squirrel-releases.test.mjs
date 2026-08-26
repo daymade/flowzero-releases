@@ -34,6 +34,11 @@ test('rejects substring names, bad hash, bad size, and extra records', () => {
     nupkgBytes,
   }), /size does not match/u);
   assert.throws(() => verifySquirrelReleases({
+    releasesText: `${sha1} ${nupkgName} 0${nupkgBytes.length}\n`,
+    nupkgName,
+    nupkgBytes,
+  }), /size does not match/u);
+  assert.throws(() => verifySquirrelReleases({
     releasesText: `${valid}${valid}`,
     nupkgName,
     nupkgBytes,
