@@ -1,0 +1,95 @@
+name: Migrate Legacy Combined Channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Legacy channel to split
+        required: true
+        type: choice
+        options: [stable, beta]
+      legacy_manifest_url:
+        description: Exact public legacy current.json URL
+        required: true
+        type: string
+      source_head_sha:
+        description: Exact private Flowzero source SHA for the legacy release
+        required: true
+        type: string
+      confirm_migration:
+        description: Type true; existing platform pointers are never overwritten
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.channel }}-release
+    concurrency:
+      group: flowzero-platform-migration-${{ inputs.channel }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout frozen migration toolkit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Validate explicit migration inputs
+        run: >-
+          node -e "const u=new URL(process.env.LEGACY_URL);if(u.protocol!=='https:'||!u.pathname.endsWith('/current.json')||!/^[a-f0-9]{40}$/.test(process.env.SOURCE_SHA)||process.env.CONFIRM!=='true')throw new Error('invalid migration inputs')"
+        env:
+          LEGACY_URL: ${{ inputs.legacy_manifest_url }}
+          SOURCE_SHA: ${{ inputs.source_head_sha }}
+          CONFIRM: ${{ inputs.confirm_migration }}
+
+      - name: Read the small legacy snapshot
+        run: >-
+          curl --fail --silent --show-error --location
+          --output "$RUNNER_TEMP/legacy-current.json"
+          "${{ inputs.legacy_manifest_url }}"
+
+      - name: Split macOS legacy snapshot
+        run: >-
+          node .github/scripts/split-legacy-channel-manifest.mjs
+          --legacy-manifest "$RUNNER_TEMP/legacy-current.json"
+          --platform macos-arm64
+          --source-head-sha "${{ inputs.source_head_sha }}"
+          --output "$RUNNER_TEMP/macos-platform.json"
+
+      - name: Split Windows legacy snapshot
+        run: >-
+          node .github/scripts/split-legacy-channel-manifest.mjs
+          --legacy-manifest "$RUNNER_TEMP/legacy-current.json"
+          --platform windows-x64
+          --source-head-sha "${{ inputs.source_head_sha }}"
+          --output "$RUNNER_TEMP/windows-platform.json"
+
+      - name: Seed Mac platform pointer without overwrite
+        run: >-
+          node .github/scripts/seed-migrated-platform-channel.mjs
+          --manifest "$RUNNER_TEMP/macos-platform.json"
+          --confirm-migration "${{ inputs.confirm_migration }}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+          R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
+
+      - name: Seed Windows platform pointer without overwrite
+        run: >-
+          node .github/scripts/seed-migrated-platform-channel.mjs
+          --manifest "$RUNNER_TEMP/windows-platform.json"
+          --confirm-migration "${{ inputs.confirm_migration }}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+          R2_PUBLIC_BASE_URL: https://downloads.flowzero.app

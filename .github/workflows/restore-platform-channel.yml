@@ -1,0 +1,112 @@
+name: Restore Durable Platform Channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      toolkit_sha:
+        description: Exact flowzero-releases commit SHA used for recovery
+        required: true
+        type: string
+      channel:
+        description: Channel to restore
+        required: true
+        type: choice
+        options: [stable, beta]
+      platform:
+        description: Platform to restore
+        required: true
+        type: choice
+        options: [macos-arm64, windows-x64]
+      tag:
+        description: Durable platform checkpoint tag
+        required: true
+        type: string
+      allow_downgrade:
+        description: Explicitly allow rollback to an older tag
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.channel }}-release
+    concurrency:
+      group: flowzero-promote-${{ inputs.channel }}-${{ inputs.platform }}
+      cancel-in-progress: false
+    steps:
+      - name: Validate exact recovery inputs
+        run: >-
+          node -e "if(!/^[a-f0-9]{40}$/.test(process.env.TOOLKIT_SHA))throw new Error('invalid toolkit SHA')"
+        env:
+          TOOLKIT_SHA: ${{ inputs.toolkit_sha }}
+
+      - name: Checkout explicit recovery toolkit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.toolkit_sha }}
+          persist-credentials: false
+
+      - name: Validate canonical tag and channel
+        run: >-
+          node --input-type=module -e
+          "import {parseChannelReleaseTag} from './.github/scripts/release-tag-contract.mjs';parseChannelReleaseTag(process.env.TAG,process.env.CHANNEL)"
+        env:
+          TAG: ${{ inputs.tag }}
+          CHANNEL: ${{ inputs.channel }}
+
+      - name: Download durable mirrored checkpoint and platform manifest
+        run: |
+          set -euo pipefail
+          BASE_KEY="channels/${{ inputs.channel }}/platforms/${{ inputs.platform }}"
+          aws s3api get-object \
+            --bucket flowzero-releases \
+            --key "$BASE_KEY/checkpoints/${{ inputs.tag }}.json" \
+            --endpoint-url "$R2_ENDPOINT" \
+            "$RUNNER_TEMP/mirrored.json" >/dev/null
+          aws s3api get-object \
+            --bucket flowzero-releases \
+            --key "$BASE_KEY/releases/${{ inputs.tag }}.json" \
+            --endpoint-url "$R2_ENDPOINT" \
+            "$RUNNER_TEMP/platform-manifest.json" >/dev/null
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+
+      - name: Restore one platform pointer from durable state
+        uses: ./.github/actions/promote-update-channel
+        with:
+          platform-manifest: ${{ runner.temp }}/platform-manifest.json
+          mirrored-checkpoint: ${{ runner.temp }}/mirrored.json
+          allow-downgrade: ${{ inputs.allow_downgrade }}
+          output-receipt: ${{ runner.temp }}/promotion-receipt.json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+          R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
+          ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
+
+      - name: Verify user-facing channel after durable recovery
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          node .github/scripts/verify-channel-canary.mjs \
+            --channel "${{ inputs.channel }}" \
+            --platform "${{ inputs.platform }}" \
+            --version "$VERSION"
+        env:
+          TAG: ${{ inputs.tag }}
+
+      - name: Preserve durable recovery receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: durable-recovery-${{ inputs.channel }}-${{ inputs.platform }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/promotion-receipt.json
+          if-no-files-found: error
+          retention-days: 30

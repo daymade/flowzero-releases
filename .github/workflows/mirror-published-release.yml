@@ -1,169 +1,109 @@
-name: Mirror Published Release
+name: Resume Platform Promotion
 
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Existing release tag to mirror (for example v0.1.2-beta.5)'
+      source_run_id:
+        description: Workflow run containing the small mirrored state artifact
         required: true
+        type: string
+      state_artifact_id:
+        description: Exact Actions artifact ID for the mirrored platform checkpoint
+        required: true
+        type: string
+      toolkit_sha:
+        description: Exact flowzero-releases commit SHA that will execute the recovery
+        required: true
+        type: string
       channel:
-        description: 'Channel pointer to promote after mirror verification'
+        description: Expected channel
         required: true
         type: choice
-        options:
-          - beta
-          - stable
+        options: [stable, beta]
+      platform:
+        description: Platform to resume
+        required: true
+        type: choice
+        options: [macos-arm64, windows-x64]
+      version:
+        description: Expected version without v prefix
+        required: true
+        type: string
       allow_downgrade:
-        description: 'Explicitly allow rollback to an older published release'
+        description: Explicitly allow an older platform version to replace current
         required: true
         type: boolean
-        default: false
-      mirror_assets:
-        description: 'Re-download and verify all binary mirrors before promotion'
-        required: true
-        type: boolean
-        default: true
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
-  mirror:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+  resume:
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.channel }}-release
     concurrency:
-      group: flowzero-update-channel-${{ inputs.channel }}
-      queue: max
+      group: flowzero-promote-${{ inputs.channel }}-${{ inputs.platform }}
       cancel-in-progress: false
     steps:
-      - name: Checkout release infrastructure
-        uses: actions/checkout@v7
+      - name: Validate exact recovery identity
+        run: >-
+          node -e "if(!/^[a-f0-9]{40}$/.test(process.env.TOOLKIT_SHA)||!/^\d+$/.test(process.env.SOURCE_RUN_ID)||!/^\d+$/.test(process.env.ARTIFACT_ID))throw new Error('invalid recovery identity')"
+        env:
+          TOOLKIT_SHA: ${{ inputs.toolkit_sha }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          ARTIFACT_ID: ${{ inputs.state_artifact_id }}
+
+      - name: Checkout explicit recovery toolkit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: main
+          ref: ${{ inputs.toolkit_sha }}
           persist-credentials: false
 
-      - name: Validate release tag and channel contract
-        env:
-          RELEASE_TAG: ${{ inputs.tag }}
-          RELEASE_CHANNEL: ${{ inputs.channel }}
-        run: |
-          node .github/scripts/check-release-tombstone.mjs --tag "$RELEASE_TAG"
-          node .github/scripts/assert-channel-version-forward.mjs \
-            --channel "$RELEASE_CHANNEL" \
-            --target-tag "$RELEASE_TAG" \
-            --allow-downgrade false
-
-      - name: Validate current channel ordering before mirror
-        env:
-          RELEASE_TAG: ${{ inputs.tag }}
-          RELEASE_CHANNEL: ${{ inputs.channel }}
-          ALLOW_DOWNGRADE: ${{ inputs.allow_downgrade }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: flowzero-releases
-        run: |
-          set -euo pipefail
-          CURRENT_MANIFEST="$RUNNER_TEMP/tinkle_flowzero-current-channel.json"
-          aws s3api get-object \
-            --bucket "$R2_BUCKET" \
-            --key "channels/$RELEASE_CHANNEL/current.json" \
-            --endpoint-url "$R2_ENDPOINT" \
-            "$CURRENT_MANIFEST" \
-            > /dev/null
-          node .github/scripts/assert-channel-version-forward.mjs \
-            --channel "$RELEASE_CHANNEL" \
-            --target-tag "$RELEASE_TAG" \
-            --current-manifest "$CURRENT_MANIFEST" \
-            --allow-downgrade "$ALLOW_DOWNGRADE"
-
-      - name: Download the published release manifest
-        if: ${{ inputs.mirror_assets }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts/published-release
-          gh release download \
-            "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --dir artifacts/published-release
-
-      - name: Validate immutable published asset identity before mirror writes
-        if: ${{ inputs.mirror_assets }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          RELEASE_JSON="$RUNNER_TEMP/tinkle_flowzero-published-release.json"
-          IDENTITY_JSON="$RUNNER_TEMP/tinkle_flowzero-published-release-identity.json"
-          gh api \
-            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
-            > "$RELEASE_JSON"
-          node .github/scripts/release-asset-identity.mjs \
-            --release-json "$RELEASE_JSON" \
-            --expected-tag "$RELEASE_TAG" \
-            --expected-draft false \
-            --expected-immutable true \
-            --output "$IDENTITY_JSON"
-          gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null
-
-          ACTUAL_NAMES="$RUNNER_TEMP/tinkle_flowzero-actual-release-assets.txt"
-          EXPECTED_NAMES="$RUNNER_TEMP/tinkle_flowzero-expected-release-assets.txt"
-          find artifacts/published-release -maxdepth 1 -type f -exec basename {} \; \
-            | LC_ALL=C sort > "$ACTUAL_NAMES"
-          jq -r '.assets[].name' "$IDENTITY_JSON" | LC_ALL=C sort > "$EXPECTED_NAMES"
-          if ! cmp -s "$ACTUAL_NAMES" "$EXPECTED_NAMES"; then
-            echo "::error::Downloaded release assets do not match the immutable six-role identity"
-            diff -u "$EXPECTED_NAMES" "$ACTUAL_NAMES" || true
-            exit 1
-          fi
-          while IFS=$'\t' read -r ASSET_NAME ASSET_SIZE ASSET_SHA256; do
-            ASSET_PATH="artifacts/published-release/$ASSET_NAME"
-            if [[ "$(stat -c '%s' "$ASSET_PATH")" != "$ASSET_SIZE" || "$(sha256sum "$ASSET_PATH" | awk '{print $1}')" != "$ASSET_SHA256" ]]; then
-              echo "::error::Downloaded release asset bytes do not match GitHub digest: $ASSET_NAME"
-              exit 1
-            fi
-          done < <(jq -r '.assets[] | [.name, (.size | tostring), .sha256] | @tsv' "$IDENTITY_JSON")
-
-      - name: Mirror and verify published assets
-        if: ${{ inputs.mirror_assets }}
-        uses: ./.github/actions/mirror-release-assets
+      - name: Download exact mirrored state artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          asset-root: artifacts/published-release
-          release-tag: ${{ inputs.tag }}
+          artifact-ids: ${{ inputs.state_artifact_id }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/platform-state
+
+      - name: Verify requested identity matches checkpoint
+        run: >-
+          node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(process.env.MANIFEST));if(p.channel!==process.env.CHANNEL||p.platform!==process.env.PLATFORM||p.version!==process.env.VERSION)throw new Error('recovery manifest identity mismatch')"
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: flowzero-releases
-          R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
-          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
-          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
-          ALIYUN_OSS_ENDPOINT: oss-cn-beijing.aliyuncs.com
-          ALIYUN_OSS_REGION: cn-beijing
-          ALIYUN_OSS_BUCKET: flowzero-releases-cn
-          ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
+          MANIFEST: ${{ runner.temp }}/platform-state/platform-manifest.json
+          CHANNEL: ${{ inputs.channel }}
+          PLATFORM: ${{ inputs.platform }}
+          VERSION: ${{ inputs.version }}
 
-      - name: Verify channel manifest generator
-        run: node --test .github/scripts/*.test.mjs
-
-      - name: Promote mirrored release to the selected channel
+      - name: Resume only the platform CAS
         uses: ./.github/actions/promote-update-channel
         with:
-          release-tag: ${{ inputs.tag }}
-          channel: ${{ inputs.channel }}
+          platform-manifest: ${{ runner.temp }}/platform-state/platform-manifest.json
+          mirrored-checkpoint: ${{ runner.temp }}/platform-state/mirrored.json
           allow-downgrade: ${{ inputs.allow_downgrade }}
+          output-receipt: ${{ runner.temp }}/promotion-receipt.json
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET: flowzero-releases
           R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
           ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
+
+      - name: Verify user-facing channel after recovery
+        run: >-
+          node .github/scripts/verify-channel-canary.mjs
+          --channel "${{ inputs.channel }}"
+          --platform "${{ inputs.platform }}"
+          --version "${{ inputs.version }}"
+
+      - name: Preserve resumed promotion receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: resumed-${{ inputs.channel }}-${{ inputs.platform }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/promotion-receipt.json
+          if-no-files-found: error
+          retention-days: 30

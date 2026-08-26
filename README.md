@@ -20,7 +20,8 @@ This repository records signed releases and runs the release pipeline.
 
 - Published release tags and their binary archives are hosted here. Intentionally withdrawn releases are removed from distribution and permanently recorded by the [release tombstone policy](.github/release-tombstones.json).
 - Normal downloads and automatic updates use the channel-configured Flowzero release origin. The public release workflow writes the same immutable objects to the global R2 mirror and the Beijing OSS mirror before publishing.
-- After both GitHub draft asset verification jobs pass, CI publishes the release, generates an immutable channel snapshot, and atomically advances the R2 `current.json` pointer. The Vercel update service reads that single snapshot and adapts it to the existing macOS and Windows update protocols.
+- macOS and Windows advance through independent candidate, verification, mirror, R2 platform-pointer CAS, and canary lanes. The Vercel update service reads both platform pointers and adapts them to the existing updater protocols; one platform may remain on an older tag without blocking the other.
+- GitHub Release is an asynchronous immutable archive. Archive failure does not roll back a platform that already passed its user-facing canary.
 - Build pipeline runs in GitHub Actions.
 - Source code is maintained in a private repository.
 
@@ -69,7 +70,7 @@ shasum -a 256 Flowzero-*.dmg
 shasum -a 256 Flowzero-*.zip
 ```
 
-Then compare with the checksum shown in the corresponding GitHub Release asset details/API response. The mirror and GitHub archive are verified from the same CI artifact before publication.
+Then compare it with the SHA-256 in the platform channel manifest or the optional GitHub immutable archive. Automatic update selection comes from the platform pointer, not from the GitHub Release list.
 
 ## Release Channels
 
@@ -79,12 +80,9 @@ Then compare with the checksum shown in the corresponding GitHub Release asset d
 | Beta | `vX.Y.Z-beta.N` | `https://updates-beta.flowzero.app` |
 
 `Beta` releases are published as GitHub Pre-releases.
-Each channel is serialized across build, mirror, publication, and pointer promotion. The exact canonical tag and current channel version are validated before any immutable R2/OSS object or GitHub Release is created.
+Promotion is serialized per channel and platform. The canonical tag, current platform version, current-main tombstone policy, content-addressed candidate, and native platform receipt are checked before external writes.
 
-When a channel has no matching published release—before its first release or
-after an authorized withdrawal—the explicit `Initialize Empty Update Channel`
-workflow publishes a `no_release` snapshot. It refuses to clear a channel while
-a matching published release still exists.
+`Initialize Empty Platform Channel` is only for a platform that has never had a pointer or published snapshot. An existing platform is cleared after an authorized withdrawal only through `Withdraw Platform Channel`, which requires the current tag to be tombstoned and uses ETag CAS.
 
 Withdrawn tags are immutable historical facts in the
 [release tombstone policy](.github/release-tombstones.json). Standard release,
@@ -113,9 +111,9 @@ https://github.com/daymade/flowzero-releases/issues
 
 - Releases are built by GitHub Actions.
 - Published artifacts are uploaded from CI jobs.
-- The exact release manifest is mirrored to R2 and Beijing OSS, then verified through both public origins before the GitHub release draft is created.
-- The channel pointer advances only after the live GitHub identity and the complete public bytes from both R2 and Beijing OSS are reverified in the same serialized channel run.
-- A release becomes visible to automatic update clients only after the macOS and Windows draft assets pass verification, the GitHub draft is published, and the channel pointer is promoted. Re-running `Mirror Published Release` repairs or explicitly rolls back that pointer without rebuilding binaries; its `mirror_assets` input controls whether already-verified binary mirrors are rechecked.
+- Each requested platform is content-addressed, natively verified, written create-only to R2 and Beijing OSS, and proven by server checksum/metadata plus public HEAD and a one-byte range probe.
+- A platform becomes visible to clients only after its own R2 pointer CAS and update-server/origin canary. GitHub archive creation runs afterward and never gates another platform.
+- Short-term CAS replay uses the exact Actions state artifact; long-term recovery uses the immutable R2 checkpoint; missing mirror objects or historical rollback use the exact GitHub archive manifest through `Repair or Roll Back Published Platform`.
 - The final notarized macOS ZIP receives a generated SHA-512 integrity sidecar before mirroring; clients consume channel metadata from the update service and stream the versioned ZIP from the mirror.
 - macOS artifacts are signed and notarized before publishing.
 - Windows artifacts are built in the public release workflow, installer-smoke tested, and published alongside macOS assets when the tag includes the Windows lane.

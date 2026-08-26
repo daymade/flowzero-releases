@@ -20,7 +20,8 @@
 
 - 已发布版本的标签和二进制归档在这里维护。主动撤回的版本会从分发链移除，并永久记录在[版本撤回 tombstone 权威表](.github/release-tombstones.json)。
 - 普通下载和自动更新使用当前通道明确选择的 Flowzero 发布源；发布流程会在正式发布前把同一份不可变产物写入全球 R2 镜像和北京 OSS 镜像。
-- macOS 与 Windows 的 GitHub draft 资产验收都通过后，CI 才将 draft 转为正式发布，生成不可变的通道快照并原子推进 R2 `current.json` 指针。Vercel 更新服务只读取这一个快照，再适配现有 macOS 与 Windows 更新协议。
+- macOS 与 Windows 分别经过 candidate、平台验收、双镜像、R2 平台 pointer CAS 和用户可见 canary；一个平台保留旧版本不会阻塞另一个平台。Vercel 更新服务分别读取两个平台 pointer，再适配现有更新协议。
+- GitHub Release 是异步 immutable archive；archive 失败不会回滚已经通过 canary 的平台。
 - 构建流程通过 GitHub Actions 执行。
 - 源码位于私有仓库中维护。
 
@@ -69,7 +70,7 @@ shasum -a 256 Flowzero-*.dmg
 shasum -a 256 Flowzero-*.zip
 ```
 
-再与对应 GitHub Release 的资产详情/API 中展示的 checksum 对比。镜像与 GitHub 归档在发布前由 CI 对同一份产物完成校验。
+再与平台频道 manifest 中的 SHA-256 或可选 GitHub immutable archive 对比。自动更新选择只读平台 pointer，不从 GitHub Release 列表推断。
 
 ## 发布通道
 
@@ -80,9 +81,7 @@ shasum -a 256 Flowzero-*.zip
 
 `Beta` 版本会以 GitHub Pre-release 形式发布。
 
-通道没有匹配的已发布版本时——包括首个版本发布前和获准撤回后——可运行
-显式的 `Initialize Empty Update Channel` workflow 写入 `no_release` 快照；
-只要该通道仍有匹配的已发布版本，workflow 就会拒绝清空。
+`Initialize Empty Platform Channel` 只用于从未存在 pointer 或 published snapshot 的平台。已有平台在获准撤回后清空，必须走 `Withdraw Platform Channel`：当前 tag 必须已经 tombstone，并通过 ETag CAS 切到 `no_release`。
 
 撤回标签是[版本撤回 tombstone 权威表](.github/release-tombstones.json)中的
 不可变历史事实。标准发布、补镜像和频道提升路径都会永久拒绝这些标签；
@@ -110,8 +109,9 @@ https://github.com/daymade/flowzero-releases/issues
 
 - 发布版本由 GitHub Actions 构建。
 - 发布产物由 CI 流程上传。
-- GitHub release draft 创建前，CI 会先把完整发布清单镜像到 R2 和北京 OSS，并通过两个公开源完成验证。
-- 只有 macOS 与 Windows 的 draft 资产验收通过、GitHub draft 转为正式发布并完成通道指针推进后，新版本才会对自动更新客户端可见。重新运行 `Mirror Published Release` 可以修复指针，或在显式允许时回滚到旧发布，无需重新构建二进制；`mirror_assets` 输入决定是否重新校验已验证过的二进制镜像。
+- 每个平台的 candidate 都经过内容寻址与原生验收，再以 create-only 写入 R2 和北京 OSS，并用服务端 checksum/metadata、公开 HEAD 和 1-byte range 证明。
+- 平台只有在自己的 R2 pointer CAS 和更新服务/origin canary 通过后才对客户端可见；GitHub archive 随后异步创建，不阻塞另一平台。
+- 短期 CAS 续跑使用精确 Actions state artifact；长期恢复使用不可变 R2 checkpoint；镜像对象缺失或历史回滚则通过 `Repair or Roll Back Published Platform` 从 GitHub archive manifest 精确修复。
 - 最终公证后的 macOS ZIP 会先生成 SHA-512 完整性 sidecar；客户端从更新服务读取当前通道元数据，再从镜像流式下载版本化 ZIP。
 - macOS 产物在发布前完成签名与公证。
 - Windows 产物由 public release workflow 构建，在发布前完成 installer smoke，并在该 tag 启用 Windows lane 时与 macOS 产物一起发布。

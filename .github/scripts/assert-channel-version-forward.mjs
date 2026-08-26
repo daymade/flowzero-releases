@@ -21,6 +21,7 @@ function compareParts(left, right) {
 
 export function assertChannelVersionForward({
   channel,
+  platform = null,
   targetTag,
   currentManifest = null,
   allowDowngrade = false,
@@ -33,9 +34,13 @@ export function assertChannelVersionForward({
   if (!currentManifest || typeof currentManifest !== 'object' || Array.isArray(currentManifest)) {
     throw new Error('Current channel manifest must be an object');
   }
+  const expectedSchema = platform
+    ? 'flowzero.update_platform_manifest.v1'
+    : 'flowzero.update_channel_manifest.v1';
   if (
-    currentManifest.schema !== 'flowzero.update_channel_manifest.v1'
+    currentManifest.schema !== expectedSchema
     || currentManifest.channel !== channel
+    || (platform && currentManifest.platform !== platform)
   ) {
     throw new Error('Current channel manifest identity does not match the requested channel');
   }
@@ -62,6 +67,7 @@ function parseArguments(argv) {
   const allowed = new Set([
     '--channel',
     '--target-tag',
+    '--platform',
     '--current-manifest',
     '--allow-downgrade',
   ]);
@@ -89,6 +95,7 @@ export async function main(argv = process.argv.slice(2)) {
     : null;
   const result = assertChannelVersionForward({
     channel: args['--channel'],
+    platform: args['--platform'] || null,
     targetTag: args['--target-tag'],
     currentManifest,
     allowDowngrade: args['--allow-downgrade'] === 'true',

@@ -1,0 +1,93 @@
+name: Verify macOS Agent Specialty
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Release workflow run containing the final Mac artifact
+        required: true
+        type: string
+      final_artifact_id:
+        description: Exact final Mac Actions artifact ID
+        required: true
+        type: string
+      source_sha:
+        description: Exact private Flowzero source SHA
+        required: true
+        type: string
+      version:
+        description: Release version without v prefix
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - name: Validate explicit specialty inputs
+        run: >-
+          node -e "if(!/^\d+$/.test(process.env.RUN_ID)||!/^\d+$/.test(process.env.ARTIFACT_ID)||!/^[a-f0-9]{40}$/.test(process.env.SOURCE_SHA))throw new Error('invalid specialty identity')"
+        env:
+          RUN_ID: ${{ inputs.source_run_id }}
+          ARTIFACT_ID: ${{ inputs.final_artifact_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install exact source-side verifier dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Download exact final Mac artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ inputs.final_artifact_id }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/mac-final
+
+      - name: Run non-blocking Agent/automation/supervisor specialty suite
+        run: |
+          set -euo pipefail
+          DMG_NAME="$(node -e '
+            const fs=require("node:fs");
+            const c=JSON.parse(fs.readFileSync(process.argv[1]));
+            process.stdout.write(c.candidate.assets.find(a=>a.role==="macos_dmg").name);
+          ' "$RUNNER_TEMP/mac-final/evidence/candidate.json")"
+          pnpm run release:verify:ci -- \
+            --suite macos-agent-runtime \
+            --version "${{ inputs.version }}" \
+            --head-sha "${{ inputs.source_sha }}" \
+            --app-path "$RUNNER_TEMP/specialty/Flowzero.app" \
+            --subject-file "$RUNNER_TEMP/mac-final/artifacts/$DMG_NAME" \
+            --output "$RUNNER_TEMP/specialty/verification.json"
+
+      - name: Preserve specialty receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-agent-specialty-${{ github.run_id }}
+          path: ${{ runner.temp }}/specialty/verification.json
+          if-no-files-found: error
+          retention-days: 30
+

@@ -1,0 +1,72 @@
+name: Withdraw Platform Channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Channel whose current platform tag is being withdrawn
+        required: true
+        type: choice
+        options: [stable, beta]
+      platform:
+        description: Platform pointer to clear
+        required: true
+        type: choice
+        options: [macos-arm64, windows-x64]
+      withdrawn_tag:
+        description: Permanently tombstoned tag currently selected by this platform
+        required: true
+        type: string
+      confirm_withdrawal:
+        description: Repeat the exact withdrawn tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  withdraw:
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.channel }}-release
+    concurrency:
+      group: flowzero-promote-${{ inputs.channel }}-${{ inputs.platform }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout current withdrawal toolkit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: CAS the withdrawn platform pointer to no_release
+        run: >-
+          node .github/scripts/withdraw-platform-channel.mjs
+          --channel "${{ inputs.channel }}"
+          --platform "${{ inputs.platform }}"
+          --withdrawn-tag "${{ inputs.withdrawn_tag }}"
+          --confirm-withdrawal "${{ inputs.confirm_withdrawal }}"
+          --output "$RUNNER_TEMP/withdrawal-receipt.json"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+          R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
+
+      - name: Verify the user-facing platform is now empty
+        run: >-
+          node .github/scripts/verify-channel-canary.mjs
+          --channel "${{ inputs.channel }}"
+          --platform "${{ inputs.platform }}"
+          --state no_release
+
+      - name: Preserve the withdrawal receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: withdrawal-${{ inputs.channel }}-${{ inputs.platform }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/withdrawal-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+

@@ -5,9 +5,17 @@ const IMMUTABLE_CHANNEL_STATE_KEY_PATTERN =
   /^channels\/(stable|beta)\/states\/no-release\.json$/;
 const CURRENT_CHANNEL_KEY_PATTERN =
   /^channels\/(stable|beta)\/current\.json$/;
+const IMMUTABLE_PLATFORM_CHANNEL_KEY_PATTERN =
+  /^channels\/(stable|beta)\/platforms\/(macos-arm64|windows-x64)\/releases\/v[0-9A-Za-z.+-]+\.json$/;
+const IMMUTABLE_PLATFORM_CHECKPOINT_KEY_PATTERN =
+  /^channels\/(stable|beta)\/platforms\/(macos-arm64|windows-x64)\/checkpoints\/v[0-9A-Za-z.+-]+\.json$/;
+const PLATFORM_CHANNEL_STATE_KEY_PATTERN =
+  /^channels\/(stable|beta)\/platforms\/(macos-arm64|windows-x64)\/states\/(?:no-release|withdrawn-v[0-9A-Za-z.+-]+)\.json$/;
+const CURRENT_PLATFORM_CHANNEL_KEY_PATTERN =
+  /^channels\/(stable|beta)\/platforms\/(macos-arm64|windows-x64)\/current\.json$/;
 
 function defaultCacheControl(key) {
-  return CURRENT_CHANNEL_KEY_PATTERN.test(key)
+  return CURRENT_CHANNEL_KEY_PATTERN.test(key) || CURRENT_PLATFORM_CHANNEL_KEY_PATTERN.test(key)
     ? 'public, max-age=0, must-revalidate, stale-if-error=86400'
     : 'public, max-age=31536000, immutable';
 }
@@ -39,7 +47,11 @@ function parseObjectKey(requestUrl) {
     RELEASE_KEY_PATTERN.test(key)
     || IMMUTABLE_CHANNEL_KEY_PATTERN.test(key)
     || IMMUTABLE_CHANNEL_STATE_KEY_PATTERN.test(key)
-    || CURRENT_CHANNEL_KEY_PATTERN.test(key);
+    || CURRENT_CHANNEL_KEY_PATTERN.test(key)
+    || IMMUTABLE_PLATFORM_CHANNEL_KEY_PATTERN.test(key)
+    || IMMUTABLE_PLATFORM_CHECKPOINT_KEY_PATTERN.test(key)
+    || PLATFORM_CHANNEL_STATE_KEY_PATTERN.test(key)
+    || CURRENT_PLATFORM_CHANNEL_KEY_PATTERN.test(key);
   if (!isAllowedKey || key.includes('\\') || key.includes('\0')) {
     return null;
   }

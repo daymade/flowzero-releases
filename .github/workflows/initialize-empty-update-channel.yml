@@ -1,46 +1,49 @@
-name: Initialize Empty Update Channel
+name: Initialize Empty Platform Channel
 
 on:
   workflow_dispatch:
     inputs:
       channel:
-        description: 'Channel that has no published release yet'
+        description: Channel to initialize
         required: true
         type: choice
-        options:
-          - stable
-          - beta
+        options: [stable, beta]
+      platform:
+        description: Platform to initialize
+        required: true
+        type: choice
+        options: [macos-arm64, windows-x64]
+      confirm_empty:
+        description: Type true to create a no_release pointer; existing pointers are never overwritten
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   initialize:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.channel }}-release
     concurrency:
-      group: flowzero-update-channel-${{ inputs.channel }}
-      queue: max
+      group: flowzero-promote-${{ inputs.channel }}-${{ inputs.platform }}
       cancel-in-progress: false
     steps:
-      - name: Checkout release infrastructure
-        uses: actions/checkout@v7
+      - name: Checkout frozen release infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Verify channel manifest generator
-        run: node --test .github/scripts/*.test.mjs
-
-      - name: Promote explicit no-release state
-        uses: ./.github/actions/promote-update-channel
-        with:
-          state: no_release
-          channel: ${{ inputs.channel }}
+      - name: Initialize one empty platform pointer
+        run: >-
+          node .github/scripts/initialize-empty-platform-channel.mjs
+          --channel "${{ inputs.channel }}"
+          --platform "${{ inputs.platform }}"
+          --confirm-empty "${{ inputs.confirm_empty }}"
         env:
-          GH_TOKEN: ${{ github.token }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET: flowzero-releases
           R2_PUBLIC_BASE_URL: https://downloads.flowzero.app

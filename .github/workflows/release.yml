@@ -1,1046 +1,940 @@
-name: Release
+name: Release Flowzero
 
 on:
   repository_dispatch:
     types: [release]
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: 'Git ref (tag or branch)'
-        required: true
-      head_sha:
-        description: 'Exact source commit SHA to build'
-        required: true
-      version:
-        description: 'Version (e.g., 0.1.0 or 0.1.0-beta.1)'
-        required: true
-      offline:
-        description: 'Build offline version'
-        type: boolean
-        default: false
+
+permissions:
+  contents: read
 
 concurrency:
-  group: flowzero-update-channel-${{ contains(github.event.client_payload.version || inputs.version, '-') && 'beta' || 'stable' }}
-  queue: max
+  group: release-transaction-${{ github.event.client_payload.intent.transaction_id || github.run_id }}
   cancel-in-progress: false
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
-      ref: ${{ steps.params.outputs.ref }}
-      head_sha: ${{ steps.params.outputs.head_sha }}
-      version: ${{ steps.params.outputs.version }}
-      offline: ${{ steps.params.outputs.offline }}
-      channel: ${{ contains(steps.params.outputs.version, '-') && 'beta' || 'stable' }}
+      version: ${{ steps.transaction.outputs.version }}
+      tag: ${{ steps.transaction.outputs.tag }}
+      channel: ${{ steps.transaction.outputs.channel }}
+      variant: ${{ steps.transaction.outputs.variant }}
+      head_sha: ${{ steps.transaction.outputs.head_sha }}
+      transaction_id: ${{ steps.transaction.outputs.transaction_id }}
+      transaction_short: ${{ steps.transaction.outputs.transaction_short }}
+      release_infra_sha: ${{ steps.transaction.outputs.release_infra_sha }}
+      macos_requested: ${{ steps.transaction.outputs.macos_requested }}
+      windows_requested: ${{ steps.transaction.outputs.windows_requested }}
+      windows_nupkg_name: ${{ steps.transaction.outputs.windows_nupkg_name }}
+      transaction_artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
-      - name: Get parameters
-        id: params
-        run: |
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            # Accept both head_sha (snake_case) and headSha (camelCase) for robustness
-            RESOLVED_SHA="${{ github.event.client_payload.head_sha || github.event.client_payload.headSha }}"
-            {
-              echo "ref=${{ github.event.client_payload.ref }}"
-              echo "head_sha=$RESOLVED_SHA"
-              echo "version=${{ github.event.client_payload.version }}"
-              echo "offline=${{ github.event.client_payload.offline || 'false' }}"
-            } >> "$GITHUB_OUTPUT"
-          else
-            {
-              echo "ref=${{ inputs.ref }}"
-              echo "head_sha=${{ inputs.head_sha }}"
-              echo "version=${{ inputs.version }}"
-              echo "offline=${{ inputs.offline }}"
-            } >> "$GITHUB_OUTPUT"
-          fi
-          echo "::notice::version=${{ github.event_name == 'repository_dispatch' && github.event.client_payload.version || inputs.version }}"
-
-      - name: Checkout current release policy
-        uses: actions/checkout@v7
+      - name: Checkout frozen release infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Reject permanently withdrawn versions
-        env:
-          RELEASE_TAG: v${{ steps.params.outputs.version }}
-        run: node .github/scripts/check-release-tombstone.mjs --tag "$RELEASE_TAG"
+      - name: Parse immutable release transaction
+        id: transaction
+        run: >-
+          node .github/scripts/release-transaction.mjs
+          --event-file "$GITHUB_EVENT_PATH"
+          --release-infra-sha "$GITHUB_SHA"
+          --run-id "$GITHUB_RUN_ID"
+          --run-attempt "$GITHUB_RUN_ATTEMPT"
+          --output "$RUNNER_TEMP/release-transaction.json"
+          --github-output "$GITHUB_OUTPUT"
 
-      - name: Validate release channel contract
-        env:
-          RELEASE_TAG: v${{ steps.params.outputs.version }}
-          RELEASE_CHANNEL: ${{ contains(steps.params.outputs.version, '-') && 'beta' || 'stable' }}
-        run: |
-          node .github/scripts/assert-channel-version-forward.mjs \
-            --channel "$RELEASE_CHANNEL" \
-            --target-tag "$RELEASE_TAG" \
-            --allow-downgrade false
+      - name: Reject permanently withdrawn version
+        run: >-
+          node .github/scripts/check-release-tombstone.mjs
+          --tag "${{ steps.transaction.outputs.tag }}"
 
-      - name: Reject channel downgrade before immutable writes
-        env:
-          RELEASE_TAG: v${{ steps.params.outputs.version }}
-          RELEASE_CHANNEL: ${{ contains(steps.params.outputs.version, '-') && 'beta' || 'stable' }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: flowzero-releases
-        run: |
-          set -euo pipefail
-          CURRENT_MANIFEST="$RUNNER_TEMP/tinkle_flowzero-current-channel.json"
-          aws s3api get-object \
-            --bucket "$R2_BUCKET" \
-            --key "channels/$RELEASE_CHANNEL/current.json" \
-            --endpoint-url "$R2_ENDPOINT" \
-            "$CURRENT_MANIFEST" \
-            > /dev/null
-          node .github/scripts/assert-channel-version-forward.mjs \
-            --channel "$RELEASE_CHANNEL" \
-            --target-tag "$RELEASE_TAG" \
-            --current-manifest "$CURRENT_MANIFEST" \
-            --allow-downgrade false
+      - name: Verify the frozen release infrastructure contracts
+        run: node --test .github/scripts/*.test.mjs workers/release-download/test/*.test.js
 
-      - name: Verify release workflow contracts
-        run: node --test .github/scripts/*.test.mjs
+      - name: Upload immutable transaction intent
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: transaction-${{ steps.transaction.outputs.transaction_short }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-transaction.json
+          if-no-files-found: error
+          retention-days: 30
 
-  # ============================================
-  # macOS Build + Submit Signed DMG
-  # ============================================
-  build-macos:
+  qualify-source:
     needs: prepare
-    runs-on: macos-14
-    timeout-minutes: 360
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     steps:
-      - name: Checkout source (private repo)
-        uses: actions/checkout@v7
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: daymade/flowzero
           token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
           ref: ${{ needs.prepare.outputs.head_sha }}
           lfs: true
+          persist-credentials: false
+
+      - name: Prove the exact source SHA is on pushed private main
+        run: |
+          set -euo pipefail
+          PACKAGE_VERSION="$(node -p "require('./apps/desktop/package.json').version")"
+          test "$PACKAGE_VERSION" = "${{ needs.prepare.outputs.version }}"
+          STATUS="$(gh api \
+            "repos/daymade/flowzero/compare/${{ needs.prepare.outputs.head_sha }}...main" \
+            --jq '.status')"
+          if [[ "$STATUS" != 'ahead' && "$STATUS" != 'identical' ]]; then
+            echo "::error::Source SHA is not on pushed private main (compare status: $STATUS)"
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version-file: '.nvmrc'
-          cache: 'pnpm'
+          node-version-file: .nvmrc
+          cache: pnpm
 
       - name: Setup uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
-          version: '0.11.28'
+          version: 0.11.28
 
-      - name: Cache Electron
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cache/electron
-            ~/Library/Caches/electron
-          key: ${{ runner.os }}-arm64-electron-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-arm64-electron-
-
-      - name: Disk diagnostics (before cleanup)
-        run: |
-          df -h
-          du -sh "$HOME/Library/Developer/CoreSimulator" 2>/dev/null || true
-          du -sh "$HOME/Library/Developer/Xcode/DerivedData" 2>/dev/null || true
-          du -sh "$HOME/.cache" 2>/dev/null || true
-
-      - name: Free macOS runner disk
-        run: |
-          rm -rf "$HOME/Library/Developer/Xcode/DerivedData" || true
-          rm -rf "$HOME/Library/Developer/CoreSimulator/Caches" || true
-          rm -rf "$HOME/Library/Developer/CoreSimulator/Devices" || true
-          rm -rf "$HOME/Library/Caches/Homebrew" || true
-          rm -rf "$HOME/.cache/ms-playwright" || true
-          df -h
-
-      - name: Install dependencies
+      - name: Install exact dependencies
         run: pnpm install --frozen-lockfile
         env:
           SKIP_INSTALL_CONFIRM: '1'
 
-      - name: Lint
-        run: pnpm lint
-        continue-on-error: true
+      - name: Qualify source once
+        run: pnpm run lint
 
-      - name: Test
-        run: pnpm test
+      - name: Run source test contract once
+        run: pnpm run test
 
-      - name: Import Apple certificates
-        if: ${{ env.HAS_CERT == 'true' }}
-        uses: apple-actions/import-codesign-certs@v7
+      - name: Verify release policy inputs
+        run: pnpm run license:gate
+
+      - name: Verify active business battle
+        run: pnpm run context:gate
+
+  build-macos:
+    if: needs.prepare.outputs.macos_requested == 'true'
+    needs: [prepare, qualify-source]
+    runs-on: macos-15
+    timeout-minutes: 360
+    outputs:
+      stage_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ needs.prepare.outputs.head_sha }}
+          lfs: true
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: 0.11.28
+
+      - name: Cache Electron downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cache/electron
+            ~/Library/Caches/electron
+          key: flowzero-electron-cache-${{ runner.os }}-arm64-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: flowzero-electron-cache-${{ runner.os }}-arm64-
+
+      - name: Validate Mac signing and notarization inputs
+        run: >-
+          node -e "for (const name of ['MACOS_CERT_P12','MACOS_CERT_PASSWORD','APPLE_API_KEY','APPLE_API_KEY_ID','APPLE_API_ISSUER','APPLE_TEAM_ID']) if (!process.env[name]) throw new Error('missing release secret: '+name)"
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Import Apple certificate
+        uses: apple-actions/import-codesign-certs@5142e029c445c10ffc7149d172e540235a065466 # v7
         with:
           p12-file-base64: ${{ secrets.MACOS_CERT_P12 }}
           p12-password: ${{ secrets.MACOS_CERT_PASSWORD }}
-        env:
-          HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
 
-      - name: Verify signing identity
-        if: ${{ env.HAS_CERT == 'true' }}
+      - name: Resolve exact Developer ID identity
+        run: node scripts/release/resolve-macos-signing-identity.cjs
         env:
-          HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
-        run: |
-          echo "=== Keychain search list ==="
-          security list-keychains -d user
-          echo "=== Valid signing identities ==="
-          security find-identity -v signing_temp.keychain
-          echo "=== All keychains identity search ==="
-          security find-identity -v
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      - name: Prepare API key
-        if: ${{ env.HAS_API_KEY == 'true' }}
-        run: |
-          echo "${{ secrets.APPLE_API_KEY }}" | base64 --decode > /tmp/AuthKey.p8
+      - name: Install exact dependencies
+        run: pnpm install --frozen-lockfile
         env:
-          HAS_API_KEY: ${{ secrets.APPLE_API_KEY != '' }}
+          SKIP_INSTALL_CONFIRM: '1'
 
-      - name: Build + Sign Distributables
+      - name: Build and sign final DMG candidate
+        run: >-
+          pnpm run release:build:ci --
+          --mode make
+          --targets @electron-forge/maker-dmg
+          --version "${{ needs.prepare.outputs.version }}"
+          --head-sha "${{ needs.prepare.outputs.head_sha }}"
+          --arch arm64
+          ${{ needs.prepare.outputs.variant == 'offline' && '--offline' || '' }}
         env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-          FLOWZERO_OFFLINE_BUNDLE: ${{ needs.prepare.outputs.offline == 'true' && 'true' || '' }}
+          FLOWZERO_CODESIGN: '1'
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          FLOWZERO_CODESIGN: ${{ secrets.MACOS_CERT_P12 != '' && '1' || '' }}
-          FLOWZERO_NOTARIZE: ''
-          APPLE_API_KEY_PATH: /tmp/AuthKey.p8
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           MACOS_SIGNING_KEYCHAIN: signing_temp.keychain
-          DEBUG: electron-notarize*,electron-installer-dmg
-        run: |
-          ulimit -n 65536
-          pnpm run release:build:ci -- --mode make --version "${{ needs.prepare.outputs.version }}" --head-sha "${{ needs.prepare.outputs.head_sha }}" --arch arm64 ${{ needs.prepare.outputs.offline == 'true' && '--offline' || '' }}
 
-      - name: Disk diagnostics (after package)
-        run: |
-          df -h
-          du -sh apps/desktop/out 2>/dev/null || true
+      - name: Verify signed package structure before Apple submission
+        run: >-
+          pnpm run release:verify:ci --
+          --suite macos-structure
+          --version "${{ needs.prepare.outputs.version }}"
+          --head-sha "${{ needs.prepare.outputs.head_sha }}"
+          --app-path "apps/desktop/out/Flowzero-darwin-arm64/Flowzero.app"
+          --subject-file "apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
+          --output "apps/desktop/out/notarize-stage/macos-structure.json"
 
-      - name: Submit Apple notarization
+      - name: Materialize Apple API key
+        run: >-
+          node -e "require('node:fs').writeFileSync(process.env.APPLE_API_KEY_PATH,Buffer.from(process.env.APPLE_API_KEY_B64,'base64'),{mode:0o600})"
         env:
-          APPLE_API_KEY_PATH: /tmp/AuthKey.p8
+          APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
+
+      - name: Submit final DMG exactly once
+        run: >-
+          pnpm run release:notarize:ci submit --
+          --version "${{ needs.prepare.outputs.version }}"
+          --head-sha "${{ needs.prepare.outputs.head_sha }}"
+          --app-path "apps/desktop/out/Flowzero-darwin-arm64/Flowzero.app"
+          --submission-path "apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
+          --state-file "apps/desktop/out/notarize-stage/notarization-state.json"
+        env:
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: |
-          pnpm run release:notarize:ci submit -- \
-            --version "${{ needs.prepare.outputs.version }}" \
-            --head-sha "${{ needs.prepare.outputs.head_sha }}" \
-            --app-path "apps/desktop/out/Flowzero-darwin-arm64/Flowzero.app" \
-            --submission-path "apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg" \
-            --state-file "apps/desktop/out/notarize-stage/notarization-state.json"
 
-      - name: Collect notarization stage artifacts
-        run: |
-          mkdir -p apps/desktop/out/notarize-stage
-          cp \
-            "apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg" \
-            "apps/desktop/out/notarize-stage/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
-
-      - name: Upload signed DMG + notarization state
-        uses: actions/upload-artifact@v7
+      - name: Upload notarization checkpoint
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: release-macos-notarize-stage
-          retention-days: 7
+          name: macos-notary-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
           path: |
-            apps/desktop/out/notarize-stage/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg
+            apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg
             apps/desktop/out/notarize-stage/notarization-state.json
+            apps/desktop/out/notarize-stage/macos-structure.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
 
-  # ============================================
-  # Resume Notarization + Staple Submitted DMG + Rebuild ZIP
-  # ============================================
-  resume-notarize:
+  finalize-macos:
+    if: needs.prepare.outputs.macos_requested == 'true'
     needs: [prepare, build-macos]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 360
-    steps:
-      - name: Checkout source (private repo)
-        uses: actions/checkout@v7
-        with:
-          repository: daymade/flowzero
-          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
-          ref: ${{ needs.prepare.outputs.head_sha }}
-          lfs: true
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version-file: '.nvmrc'
-          cache: 'pnpm'
-
-      - name: Disk diagnostics (before resume)
-        run: |
-          df -h
-
-      - name: Cache Electron
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cache/electron
-            ~/Library/Caches/electron
-          key: ${{ runner.os }}-arm64-electron-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-arm64-electron-
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-        env:
-          SKIP_INSTALL_CONFIRM: '1'
-
-      - name: Prepare API key
-        run: |
-          echo "${{ secrets.APPLE_API_KEY }}" | base64 --decode > /tmp/AuthKey.p8
-
-      - name: Download signed DMG + notarization state
-        uses: actions/download-artifact@v8
-        with:
-          name: release-macos-notarize-stage
-          path: apps/desktop/out/notarize-stage
-
-      - name: Restore and verify submitted DMG before mount
-        run: |
-          DMG_PATH="apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
-          mkdir -p "$(dirname "$DMG_PATH")"
-          cp \
-            "apps/desktop/out/notarize-stage/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg" \
-            "$DMG_PATH"
-          pnpm run release:notarize:ci verify-submission -- \
-            --version "${{ needs.prepare.outputs.version }}" \
-            --head-sha "${{ needs.prepare.outputs.head_sha }}" \
-            --app-path "apps/desktop/out/Flowzero-darwin-arm64/Flowzero.app" \
-            --submission-path "$DMG_PATH" \
-            --state-file "apps/desktop/out/notarize-stage/notarization-state.json"
-
-      - name: Extract verified submitted app bundle
-        run: |
-          DMG_PATH="apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
-          MOUNT_POINT="$RUNNER_TEMP/flowzero-notarize-source"
-          mkdir -p "$MOUNT_POINT"
-          hdiutil attach "$DMG_PATH" -mountpoint "$MOUNT_POINT" -nobrowse -readonly
-          trap 'hdiutil detach "$MOUNT_POINT" -force 2>/dev/null || true' EXIT
-          rm -rf "apps/desktop/out/Flowzero-darwin-arm64"
-          mkdir -p "apps/desktop/out/Flowzero-darwin-arm64"
-          ditto \
-            "$MOUNT_POINT/Flowzero.app" \
-            "apps/desktop/out/Flowzero-darwin-arm64/Flowzero.app"
-          hdiutil detach "$MOUNT_POINT"
-          trap - EXIT
-
-      - name: Await Apple notarization and staple
-        env:
-          APPLE_API_KEY_PATH: /tmp/AuthKey.p8
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: |
-          pnpm run release:notarize:ci resume -- \
-            --version "${{ needs.prepare.outputs.version }}" \
-            --head-sha "${{ needs.prepare.outputs.head_sha }}" \
-            --app-path "apps/desktop/out/Flowzero-darwin-arm64/Flowzero.app" \
-            --submission-path "apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg" \
-            --state-file "apps/desktop/out/notarize-stage/notarization-state.json" \
-            --max-poll-attempts 600
-
-      - name: Preserve stapled DMG outside Forge output
-        env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          DMG_PATH="apps/desktop/out/make/Flowzero-${RELEASE_VERSION}-arm64.dmg"
-          PRESERVED_DMG="$RUNNER_TEMP/Flowzero-${RELEASE_VERSION}-arm64.stapled.dmg"
-          cp "$DMG_PATH" "$PRESERVED_DMG"
-          STAPLED_DMG_SHA256="$(shasum -a 256 "$PRESERVED_DMG" | awk '{print $1}')"
-          echo "PRESERVED_DMG=$PRESERVED_DMG" >> "$GITHUB_ENV"
-          echo "STAPLED_DMG_SHA256=$STAPLED_DMG_SHA256" >> "$GITHUB_ENV"
-
-      - name: Rebuild ZIP from stapled app
-        env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-          FLOWZERO_OFFLINE_BUNDLE: ${{ needs.prepare.outputs.offline == 'true' && 'true' || '' }}
-          FLOWZERO_CODESIGN: ''
-          FLOWZERO_NOTARIZE: ''
-        run: |
-          ulimit -n 65536
-          pnpm run release:build:ci -- --mode make-from-package --targets @electron-forge/maker-zip --version "${{ needs.prepare.outputs.version }}" --head-sha "${{ needs.prepare.outputs.head_sha }}" --arch arm64
-
-      - name: Restore and verify submitted DMG
-        env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          DMG_PATH="apps/desktop/out/make/Flowzero-${RELEASE_VERSION}-arm64.dmg"
-          mkdir -p "$(dirname "$DMG_PATH")"
-          cp "$PRESERVED_DMG" "$DMG_PATH"
-          ACTUAL_DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
-          test "$ACTUAL_DMG_SHA256" = "$STAPLED_DMG_SHA256"
-          hdiutil verify "$DMG_PATH"
-          codesign --verify --strict --verbose=2 "$DMG_PATH"
-          xcrun stapler validate "$DMG_PATH"
-          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
-
-      - name: List build outputs
-        run: find apps/desktop/out/make -type f | head -50
-
-      - name: Assert public artifact safety (macOS)
-        run: bash scripts/assert-public-artifact-safety.sh --release-dir apps/desktop/out/make --platform macos
-
-      - name: Upload macOS arm64 artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: release-macos-arm64
-          retention-days: 3
-          path: |
-            apps/desktop/out/make/**/*.dmg
-            apps/desktop/out/make/**/*.zip
-
-  # ============================================
-  # Windows Build + Installer Smoke
-  # ============================================
-  build-windows:
-    needs: prepare
-    runs-on: windows-latest
-    timeout-minutes: 360
-    steps:
-      - name: Checkout source (private repo)
-        uses: actions/checkout@v7
-        with:
-          repository: daymade/flowzero
-          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
-          ref: ${{ needs.prepare.outputs.head_sha }}
-          lfs: true
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version-file: '.nvmrc'
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-        env:
-          SKIP_INSTALL_CONFIRM: '1'
-
-      - name: Ensure POSIX checksum command compatibility
-        shell: bash
-        run: |
-          if ! command -v shasum &>/dev/null; then
-            SHIM_DIR="$RUNNER_TEMP/shasum-shim"
-            mkdir -p "$SHIM_DIR"
-            cat > "$SHIM_DIR/shasum" << 'SHEOF'
-          #!/usr/bin/env bash
-          # shasum shim: delegates to sha256sum on Windows runners
-          exec sha256sum "$@"
-          SHEOF
-            chmod +x "$SHIM_DIR/shasum"
-            echo "$SHIM_DIR" >> "$GITHUB_PATH"
-            echo "Created shasum shim at $SHIM_DIR/shasum"
-          else
-            echo "shasum already available"
-          fi
-
-      - name: Build Windows distributables
-        env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-          FLOWZERO_OFFLINE_BUNDLE: ${{ needs.prepare.outputs.offline == 'true' && 'true' || '' }}
-          FLOWZERO_CODESIGN: ''
-          FLOWZERO_NOTARIZE: ''
-        run: |
-          pnpm run release:build:ci -- --mode make --version "${{ needs.prepare.outputs.version }}" --head-sha "${{ needs.prepare.outputs.head_sha }}" --arch x64 ${{ needs.prepare.outputs.offline == 'true' && '--offline' || '' }}
-
-      - name: Run Windows installer smoke
-        run: node scripts/run-packaged-installer-smoke-windows.cjs
-
-      - name: Assert public artifact safety (Windows)
-        shell: bash
-        run: bash scripts/assert-public-artifact-safety.sh --release-dir apps/desktop/out/make/squirrel.windows/x64 --platform windows
-
-      - name: Upload Windows x64 artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: release-windows-x64
-          retention-days: 3
-          path: |
-            apps/desktop/out/make/squirrel.windows/x64/*-Setup.exe
-            apps/desktop/out/make/squirrel.windows/x64/RELEASES
-            apps/desktop/out/make/squirrel.windows/x64/*.nupkg
-
-  # ============================================
-  # Create GitHub Release draft
-  # ============================================
-  create-release-draft:
-    needs: [prepare, resume-notarize, build-windows]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
     outputs:
-      release_id: ${{ steps.create_release.outputs.id }}
-      mac_integrity_sha256: ${{ steps.mac_release_digests.outputs.mac_integrity_sha256 }}
-      mac_dmg_sha256: ${{ steps.mac_release_digests.outputs.mac_dmg_sha256 }}
-      mac_zip_sha256: ${{ steps.mac_release_digests.outputs.mac_zip_sha256 }}
-
+      final_artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
-      - name: Checkout release infrastructure
-        uses: actions/checkout@v7
+      - name: Checkout exact private release toolkit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: main
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ needs.prepare.outputs.head_sha }}
+          lfs: false
           persist-credentials: false
 
-      # Stage 1 intentionally retains an unstapled DMG with the same basename as
-      # the final DMG. Only final artifacts may enter the release upload tree.
-      - name: Download final macOS release artifacts
-        uses: actions/download-artifact@v8
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          name: release-macos-arm64
-          path: artifacts/release-macos-arm64
+          node-version-file: .nvmrc
 
-      - name: Download final Windows release artifacts
-        uses: actions/download-artifact@v8
+      - name: Download exact notarization checkpoint by artifact ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: release-windows-x64
-          path: artifacts/release-windows-x64
+          artifact-ids: ${{ needs.build-macos.outputs.stage_artifact_id }}
+          path: apps/desktop/out
 
-      - name: Require GitHub immutable releases
+      - name: Materialize Apple API key
+        run: >-
+          node -e "require('node:fs').writeFileSync(process.env.APPLE_API_KEY_PATH,Buffer.from(process.env.APPLE_API_KEY_B64,'base64'),{mode:0o600})"
         env:
-          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
-        run: |
-          set -euo pipefail
-          IMMUTABLE_SETTINGS="$RUNNER_TEMP/tinkle_flowzero-immutable-release-settings.json"
-          gh api \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/immutable-releases" \
-            > "$IMMUTABLE_SETTINGS"
-          if [[ "$(jq -r '.enabled' "$IMMUTABLE_SETTINGS")" != 'true' ]]; then
-            echo "::error::GitHub immutable releases must be enabled before creating a release draft"
-            exit 1
-          fi
+          APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
 
-      - name: Generate macOS updater integrity metadata
-        run: |
-          node --test .github/scripts/generate-macos-update-integrity.test.mjs
-          node .github/scripts/generate-macos-update-integrity.mjs \
-            --asset-root artifacts/release-macos-arm64 \
-            --version "${{ needs.prepare.outputs.version }}" \
-            --output artifacts/release-metadata/mac-update-integrity.json
+      - name: Resume the same Apple submission and staple
+        run: >-
+          node scripts/release-notarize-ci.cjs resume
+          --version "${{ needs.prepare.outputs.version }}"
+          --head-sha "${{ needs.prepare.outputs.head_sha }}"
+          --app-path "apps/desktop/out/Flowzero-darwin-arm64/Flowzero.app"
+          --submission-path "apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
+          --state-file "apps/desktop/out/notarize-stage/notarization-state.json"
+          --log-file "apps/desktop/out/notarize-stage/apple-notary-log.json"
+          --max-poll-attempts 600
+        env:
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
 
-      - name: Validate final release artifact manifest
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
+      - name: Build updater ZIP from the stapled app without Forge
+        run: >-
+          node scripts/release-finalize-macos.cjs
+          --version "${{ needs.prepare.outputs.version }}"
+          --head-sha "${{ needs.prepare.outputs.head_sha }}"
+          --app-path "apps/desktop/out/Flowzero-darwin-arm64/Flowzero.app"
+          --dmg-path "apps/desktop/out/make/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
+          --output-dir "$RUNNER_TEMP/mac-final/artifacts"
+          --receipt "$RUNNER_TEMP/mac-final/evidence/finalization.json"
 
-          DMG_FILES=(artifacts/release-macos-arm64/*.dmg)
-          ZIP_FILES=(artifacts/release-macos-arm64/zip/darwin/arm64/*.zip)
-          SETUP_FILES=(artifacts/release-windows-x64/*-Setup.exe)
-          NUPKG_FILES=(artifacts/release-windows-x64/*.nupkg)
-          INTEGRITY_FILES=(artifacts/release-metadata/mac-update-integrity.json)
+      - name: Freeze explicit macOS candidate manifest
+        run: >-
+          node scripts/release/platform-candidate.cjs
+          --platform macos-arm64
+          --version "${{ needs.prepare.outputs.version }}"
+          --variant "${{ needs.prepare.outputs.variant }}"
+          --head-sha "${{ needs.prepare.outputs.head_sha }}"
+          --transaction-id "${{ needs.prepare.outputs.transaction_id }}"
+          --release-infra-sha "${{ needs.prepare.outputs.release_infra_sha }}"
+          --run-id "$GITHUB_RUN_ID"
+          --run-attempt "$GITHUB_RUN_ATTEMPT"
+          --asset "macos_dmg=$RUNNER_TEMP/mac-final/artifacts/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
+          --asset "macos_updater_zip=$RUNNER_TEMP/mac-final/artifacts/Flowzero-darwin-arm64-${{ needs.prepare.outputs.version }}.zip"
+          --asset "macos_update_integrity=$RUNNER_TEMP/mac-final/artifacts/mac-update-integrity.json"
+          --output "$RUNNER_TEMP/mac-final/evidence/candidate.json"
+        env:
+          CI: 'true'
+          GITHUB_ACTIONS: 'true'
 
-          if [[ ${#DMG_FILES[@]} -ne 1 || ${#ZIP_FILES[@]} -ne 1 || ${#SETUP_FILES[@]} -ne 1 || ${#NUPKG_FILES[@]} -ne 1 || ${#INTEGRITY_FILES[@]} -ne 1 || ! -f artifacts/release-windows-x64/RELEASES ]]; then
-            echo "::error::Final release artifact manifest is incomplete or ambiguous"
-            find artifacts -type f | sort
-            exit 1
-          fi
-
-          EXPECTED_FILES=(
-            "${DMG_FILES[@]}"
-            "${ZIP_FILES[@]}"
-            "${SETUP_FILES[@]}"
-            "${NUPKG_FILES[@]}"
-            "${INTEGRITY_FILES[@]}"
-            artifacts/release-windows-x64/RELEASES
-          )
-          UNEXPECTED_FILES="$(comm -13 \
-            <(printf '%s\n' "${EXPECTED_FILES[@]}" | LC_ALL=C sort) \
-            <(find artifacts -type f -print | LC_ALL=C sort))"
-          if [[ -n "$UNEXPECTED_FILES" ]]; then
-            echo "::error::Unexpected file found in final release artifact manifest"
-            echo "$UNEXPECTED_FILES"
-            exit 1
-          fi
-
-          DUPLICATE_BASENAMES="$({
-            while IFS= read -r FILE; do
-              basename "$FILE"
-            done < <(find artifacts -type f)
-          } | LC_ALL=C sort | uniq -d)"
-          if [[ -n "$DUPLICATE_BASENAMES" ]]; then
-            echo "::error::Duplicate release asset basenames are forbidden"
-            echo "$DUPLICATE_BASENAMES"
-            exit 1
-          fi
-
-      - name: Freeze macOS release digests for downstream draft verification
-        id: mac_release_digests
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          DMG_FILES=(artifacts/release-macos-arm64/*.dmg)
-          ZIP_FILES=(artifacts/release-macos-arm64/zip/darwin/arm64/*.zip)
-          if [[ ${#DMG_FILES[@]} -ne 1 || ${#ZIP_FILES[@]} -ne 1 ]]; then
-            echo "::error::Cannot freeze ambiguous macOS release digests"
-            exit 1
-          fi
-          {
-            echo "mac_integrity_sha256=$(sha256sum artifacts/release-metadata/mac-update-integrity.json | awk '{print $1}')"
-            echo "mac_dmg_sha256=$(sha256sum "${DMG_FILES[0]}" | awk '{print $1}')"
-            echo "mac_zip_sha256=$(sha256sum "${ZIP_FILES[0]}" | awk '{print $1}')"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: List final release artifacts
-        run: find artifacts -type f | sort
-
-      - name: Determine release type
-        id: release_type
-        run: |
-          if [[ "${{ needs.prepare.outputs.channel }}" == 'beta' ]]; then
-            {
-              echo "prerelease=true"
-              echo "download_base=https://updates-beta.flowzero.app"
-            } >> "$GITHUB_OUTPUT"
-          else
-            {
-              echo "prerelease=false"
-              echo "download_base=https://updates.flowzero.app"
-            } >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Mirror and verify final release assets
-        uses: ./.github/actions/mirror-release-assets
+      - name: Upload immutable final Mac candidate
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          asset-root: artifacts
-          release-tag: v${{ needs.prepare.outputs.version }}
+          name: macos-final-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mac-final
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  accept-macos:
+    if: needs.prepare.outputs.macos_requested == 'true'
+    needs: [prepare, finalize-macos]
+    runs-on: macos-15
+    timeout-minutes: 180
+    outputs:
+      verification_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ needs.prepare.outputs.head_sha }}
+          lfs: true
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install verifier dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Build deterministic voice fixture outside the app
+        run: node apps/desktop/scripts/meeting/build-meeting-e2e-fixtures.cjs
+
+      - name: Download exact final Mac candidate by artifact ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.finalize-macos.outputs.final_artifact_id }}
+          path: ${{ runner.temp }}/mac-final
+
+      - name: Prove the final signed app delivers local multi-speaker context
+        run: >-
+          pnpm run release:verify:ci --
+          --suite macos-voice-context
+          --version "${{ needs.prepare.outputs.version }}"
+          --head-sha "${{ needs.prepare.outputs.head_sha }}"
+          --app-path "apps/desktop/out/release-acceptance/Flowzero.app"
+          --subject-file "$RUNNER_TEMP/mac-final/artifacts/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
+          --output "$RUNNER_TEMP/mac-verification/verification.json"
+
+      - name: Upload Mac business acceptance receipt
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-verification-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mac-verification/verification.json
+          if-no-files-found: error
+          retention-days: 30
+
+  build-windows:
+    if: needs.prepare.outputs.windows_requested == 'true'
+    needs: [prepare, qualify-source]
+    runs-on: windows-2025
+    timeout-minutes: 360
+    outputs:
+      final_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ needs.prepare.outputs.head_sha }}
+          lfs: true
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Require Windows Authenticode configuration
+        shell: pwsh
+        run: >-
+          node -e "for (const name of ['WINDOWS_CERT_PFX','WINDOWS_CERT_PASSWORD']) if (!process.env[name]) throw new Error('missing release secret: '+name)"
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+
+      - name: Materialize Windows certificate
+        shell: pwsh
+        run: node -e "require('node:fs').writeFileSync(process.env.WINDOWS_CERT_FILE,Buffer.from(process.env.WINDOWS_CERT_PFX,'base64'))"
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_FILE: ${{ runner.temp }}\flowzero-signing.pfx
+
+      - name: Install exact dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Build signed Windows release set
+        run: >-
+          pnpm run release:build:ci --
+          --mode make
+          --version "${{ needs.prepare.outputs.version }}"
+          --head-sha "${{ needs.prepare.outputs.head_sha }}"
+          --arch x64
+          ${{ needs.prepare.outputs.variant == 'offline' && '--offline' || '' }}
+        env:
+          WINDOWS_CERT_FILE: ${{ runner.temp }}\flowzero-signing.pfx
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+
+      - name: Stage exact Windows release roles
+        run: >-
+          pnpm run release:stage:windows:ci --
+          --version "${{ needs.prepare.outputs.version }}"
+          --release-dir "apps/desktop/out/make/squirrel.windows/x64"
+          --output-dir "$env:RUNNER_TEMP/windows-final/artifacts"
+
+      - name: Freeze explicit Windows candidate manifest
+        run: >-
+          pnpm run release:candidate:ci --
+          --platform windows-x64
+          --version "${{ needs.prepare.outputs.version }}"
+          --variant "${{ needs.prepare.outputs.variant }}"
+          --head-sha "${{ needs.prepare.outputs.head_sha }}"
+          --transaction-id "${{ needs.prepare.outputs.transaction_id }}"
+          --release-infra-sha "${{ needs.prepare.outputs.release_infra_sha }}"
+          --run-id "$env:GITHUB_RUN_ID"
+          --run-attempt "$env:GITHUB_RUN_ATTEMPT"
+          --asset "windows_setup=$env:RUNNER_TEMP/windows-final/artifacts/Flowzero-${{ needs.prepare.outputs.version }}-Setup.exe"
+          --asset "windows_nupkg=$env:RUNNER_TEMP/windows-final/artifacts/${{ needs.prepare.outputs.windows_nupkg_name }}"
+          --asset "windows_releases=$env:RUNNER_TEMP/windows-final/artifacts/RELEASES"
+          --output "$env:RUNNER_TEMP/windows-final/evidence/candidate.json"
+
+      - name: Upload immutable final Windows candidate
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-final-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-final
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  accept-windows:
+    if: needs.prepare.outputs.windows_requested == 'true'
+    needs: [prepare, build-windows]
+    runs-on: windows-2025
+    timeout-minutes: 180
+    outputs:
+      verification_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ needs.prepare.outputs.head_sha }}
+          lfs: false
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install verifier dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Download exact final Windows candidate by artifact ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.build-windows.outputs.final_artifact_id }}
+          path: ${{ runner.temp }}/windows-final
+
+      - name: Verify signed installer and installed app
+        run: >-
+          pnpm run release:verify:ci --
+          --suite windows-installer
+          --version "${{ needs.prepare.outputs.version }}"
+          --head-sha "${{ needs.prepare.outputs.head_sha }}"
+          --release-dir "$env:RUNNER_TEMP/windows-final/artifacts"
+          --subject-file "$env:RUNNER_TEMP/windows-final/artifacts/Flowzero-${{ needs.prepare.outputs.version }}-Setup.exe"
+          --output "$env:RUNNER_TEMP/windows-verification/verification.json"
+
+      - name: Upload Windows acceptance receipt
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-verification-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-verification/verification.json
+          if-no-files-found: error
+          retention-days: 30
+
+  mirror-macos:
+    if: needs.prepare.outputs.macos_requested == 'true'
+    needs: [prepare, finalize-macos, accept-macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      state_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      final_artifact_id: ${{ needs.finalize-macos.outputs.final_artifact_id }}
+      verification_artifact_id: ${{ needs.accept-macos.outputs.verification_artifact_id }}
+    steps:
+      - name: Checkout frozen release infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_infra_sha }}
+          persist-credentials: false
+
+      - name: Download exact final Mac candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.finalize-macos.outputs.final_artifact_id }}
+          path: ${{ runner.temp }}/mac-final
+
+      - name: Download exact Mac acceptance receipt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.accept-macos.outputs.verification_artifact_id }}
+          path: ${{ runner.temp }}/mac-verification
+
+      - name: Freeze build checkpoint
+        run: >-
+          node .github/scripts/release-platform-checkpoint.mjs
+          --phase build_created
+          --candidate "$RUNNER_TEMP/mac-final/evidence/candidate.json"
+          --output "$RUNNER_TEMP/mac-state/build-created.json"
+
+      - name: Freeze business acceptance checkpoint
+        run: >-
+          node .github/scripts/release-platform-checkpoint.mjs
+          --phase platform_verified
+          --candidate "$RUNNER_TEMP/mac-final/evidence/candidate.json"
+          --parent "$RUNNER_TEMP/mac-state/build-created.json"
+          --verification "$RUNNER_TEMP/mac-verification/verification.json"
+          --output "$RUNNER_TEMP/mac-state/platform-verified.json"
+
+      - name: Reject a Mac downgrade before immutable mirror writes
+        run: >-
+          node .github/scripts/assert-platform-release-forward.mjs
+          --channel "${{ needs.prepare.outputs.channel }}"
+          --platform macos-arm64
+          --target-tag "${{ needs.prepare.outputs.tag }}"
+          --allow-downgrade false
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+
+      - name: Mirror exact Mac candidate once
+        uses: ./.github/actions/mirror-release-assets
+        with:
+          candidate-manifest: ${{ runner.temp }}/mac-final/evidence/candidate.json
+          asset-root: ${{ runner.temp }}/mac-final/artifacts
+          output-receipt: ${{ runner.temp }}/mac-state/mirror-receipt.json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET: flowzero-releases
           R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
           ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
           ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
-          ALIYUN_OSS_ENDPOINT: oss-cn-beijing.aliyuncs.com
+          ALIYUN_OSS_ENDPOINT: https://oss-cn-beijing.aliyuncs.com
           ALIYUN_OSS_REGION: cn-beijing
           ALIYUN_OSS_BUCKET: flowzero-releases-cn
           ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
 
-      - name: Create Release (draft)
-        id: create_release
-        uses: softprops/action-gh-release@v3
+      - name: Freeze mirrored checkpoint
+        run: >-
+          node .github/scripts/release-platform-checkpoint.mjs
+          --phase mirrored
+          --candidate "$RUNNER_TEMP/mac-final/evidence/candidate.json"
+          --parent "$RUNNER_TEMP/mac-state/platform-verified.json"
+          --verification "$RUNNER_TEMP/mac-verification/verification.json"
+          --mirror-receipt "$RUNNER_TEMP/mac-state/mirror-receipt.json"
+          --output "$RUNNER_TEMP/mac-state/mirrored.json"
+
+      - name: Generate Mac platform snapshot
+        run: >-
+          node .github/scripts/generate-platform-channel-manifest.mjs
+          --checkpoint "$RUNNER_TEMP/mac-state/mirrored.json"
+          --output "$RUNNER_TEMP/mac-state/platform-manifest.json"
+
+      - name: Upload durable Mac state checkpoint
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          tag_name: v${{ needs.prepare.outputs.version }}
-          name: Flowzero v${{ needs.prepare.outputs.version }}
-          draft: true
-          prerelease: ${{ steps.release_type.outputs.prerelease }}
-          body: |
-            ## Flowzero v${{ needs.prepare.outputs.version }}
+          name: macos-state-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mac-state
+          if-no-files-found: error
+          retention-days: 30
 
-            ### Downloads
-
-            | Platform | Architecture | File |
-            |----------|--------------|------|
-            | macOS | Apple Silicon (arm64) | [Download DMG](${{ steps.release_type.outputs.download_base }}/download/mac_arm64) |
-            | Windows | x64 | [Download installer](${{ steps.release_type.outputs.download_base }}/download/windows) |
-
-            ### Auto-Update
-
-            - **Stable**: `https://updates.flowzero.app`
-            - **Beta**: `https://updates-beta.flowzero.app`
-          files: |
-            artifacts/release-macos-arm64/*.dmg
-            artifacts/release-macos-arm64/**/*.zip
-            artifacts/release-windows-x64/*-Setup.exe
-            artifacts/release-windows-x64/RELEASES
-            artifacts/release-windows-x64/*.nupkg
-            artifacts/release-metadata/mac-update-integrity.json
-
-      - name: Verify Squirrel RELEASES references uploaded nupkg
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: v${{ needs.prepare.outputs.version }}
-          RELEASE_ID: ${{ steps.create_release.outputs.id }}
-        run: |
-          set -euo pipefail
-          DRAFT_JSON="$RUNNER_TEMP/tinkle_flowzero-draft-release.json"
-          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
-            echo "::error::Draft release id is invalid"
-            exit 1
-          fi
-          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$DRAFT_JSON"
-          if [[ "$(jq -r '.draft' "$DRAFT_JSON")" != 'true' || "$(jq -r '.tag_name' "$DRAFT_JSON")" != "$RELEASE_TAG" ]]; then
-            echo "::error::Release id does not identify the expected draft"
-            exit 1
-          fi
-          NUPKG_NAME="$(jq -r '[.assets[] | select(.state == "uploaded" and (.name | endswith(".nupkg")))] | if length == 1 then .[0].name else empty end' "$DRAFT_JSON")"
-          RELEASES_ID="$(jq -r '[.assets[] | select(.state == "uploaded" and .name == "RELEASES")] | if length == 1 then .[0].id else empty end' "$DRAFT_JSON")"
-          if [[ -z "$NUPKG_NAME" || ! "$RELEASES_ID" =~ ^[0-9]+$ ]]; then
-            echo "::error::Draft must contain exactly one uploaded nupkg and RELEASES asset"
-            exit 1
-          fi
-          mkdir -p "$RUNNER_TEMP/verify-releases"
-          gh api \
-            -H 'Accept: application/octet-stream' \
-            "repos/$GITHUB_REPOSITORY/releases/assets/$RELEASES_ID" \
-            > "$RUNNER_TEMP/verify-releases/RELEASES"
-          node .github/scripts/verify-squirrel-releases.mjs \
-            --releases "$RUNNER_TEMP/verify-releases/RELEASES" \
-            --nupkg "artifacts/release-windows-x64/$NUPKG_NAME"
-          echo "RELEASES file correctly references $NUPKG_NAME"
-
-      - name: Delete macOS build artifacts after draft upload
-        uses: geekyeggo/delete-artifact@v6
-        with:
-          name: release-macos-arm64
-      - name: Delete Windows build artifacts after draft upload
-        uses: geekyeggo/delete-artifact@v6
-        with:
-          name: release-windows-x64
-      - name: Delete notarization stage artifacts after draft upload
-        uses: geekyeggo/delete-artifact@v6
-        with:
-          name: release-macos-notarize-stage
-
-  # ============================================
-  # Tier 2 Verification — macOS (cryptographic)
-  # ============================================
-  verify-draft-macos:
-    needs: [prepare, create-release-draft]
-    runs-on: macos-14
-    timeout-minutes: 30
-    permissions:
-      contents: write
+  mirror-windows:
+    if: needs.prepare.outputs.windows_requested == 'true'
+    needs: [prepare, build-windows, accept-windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      state_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      final_artifact_id: ${{ needs.build-windows.outputs.final_artifact_id }}
+      verification_artifact_id: ${{ needs.accept-windows.outputs.verification_artifact_id }}
     steps:
-      - name: Checkout release infrastructure
-        uses: actions/checkout@v7
+      - name: Checkout frozen release infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: main
+          ref: ${{ needs.prepare.outputs.release_infra_sha }}
           persist-credentials: false
 
-      - name: Download macOS assets from the GitHub draft
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: v${{ needs.prepare.outputs.version }}
-          RELEASE_ID: ${{ needs.create-release-draft.outputs.release_id }}
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/verify-macos
-          DRAFT_JSON="$RUNNER_TEMP/tinkle_flowzero-verify-macos-release.json"
-          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
-            echo "::error::Draft release id is invalid"
-            exit 1
-          fi
-          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$DRAFT_JSON"
-          if [[ "$(jq -r '.draft' "$DRAFT_JSON")" != 'true' || "$(jq -r '.tag_name' "$DRAFT_JSON")" != "$RELEASE_TAG" ]]; then
-            echo "::error::Release id does not identify the expected draft"
-            exit 1
-          fi
-          jq -r '.assets[] | select(.state == "uploaded") | [.id, .name] | @tsv' "$DRAFT_JSON" \
-            | while IFS=$'\t' read -r ASSET_ID ASSET_NAME; do
-                case "$ASSET_NAME" in
-                  *.dmg|*.zip|mac-update-integrity.json)
-                    gh api \
-                      -H 'Accept: application/octet-stream' \
-                      "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" \
-                      > "/tmp/verify-macos/$ASSET_NAME"
-                    ;;
-                esac
-              done
-
-          shopt -s nullglob
-          DMG_FILES=(/tmp/verify-macos/*.dmg)
-          ZIP_FILES=(/tmp/verify-macos/*.zip)
-          INTEGRITY_FILES=(/tmp/verify-macos/mac-update-integrity.json)
-          if [ "${#DMG_FILES[@]}" -ne 1 ] || [ "${#ZIP_FILES[@]}" -ne 1 ] || [ "${#INTEGRITY_FILES[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one draft DMG, updater ZIP, and integrity manifest"
-            find /tmp/verify-macos -maxdepth 1 -type f -print
-            exit 1
-          fi
-
-          DMG_FILE="${DMG_FILES[0]}"
-          ZIP_FILE="${ZIP_FILES[0]}"
-          INTEGRITY_FILE="${INTEGRITY_FILES[0]}"
-          {
-            echo "DMG_FILE=$DMG_FILE"
-            echo "ZIP_FILE=$ZIP_FILE"
-            echo "INTEGRITY_FILE=$INTEGRITY_FILE"
-          } >> "$GITHUB_ENV"
-          echo "Downloaded DMG: $DMG_FILE"
-          echo "Downloaded ZIP: $ZIP_FILE"
-
-      - name: Verify GitHub draft asset identity
-        env:
-          EXPECTED_INTEGRITY_SHA256: ${{ needs.create-release-draft.outputs.mac_integrity_sha256 }}
-          EXPECTED_DMG_SHA256: ${{ needs.create-release-draft.outputs.mac_dmg_sha256 }}
-          EXPECTED_ZIP_SHA256: ${{ needs.create-release-draft.outputs.mac_zip_sha256 }}
-        run: |
-          printf '%s  %s\n' "$EXPECTED_INTEGRITY_SHA256" "$INTEGRITY_FILE" | shasum -a 256 --check -
-          printf '%s  %s\n' "$EXPECTED_DMG_SHA256" "$DMG_FILE" | shasum -a 256 --check -
-          printf '%s  %s\n' "$EXPECTED_ZIP_SHA256" "$ZIP_FILE" | shasum -a 256 --check -
-          node .github/scripts/generate-macos-update-integrity.mjs \
-            --asset-root /tmp/verify-macos \
-            --manifest "$INTEGRITY_FILE"
-
-      - name: Verify signed and notarized DMG
-        run: |
-          hdiutil verify "$DMG_FILE"
-          codesign --verify --strict --verbose=2 "$DMG_FILE"
-          xcrun stapler validate "$DMG_FILE"
-          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_FILE"
-
-      - name: Mount DMG and verify contained app
-        run: |
-          MOUNT_POINT="/tmp/flowzero-dmg-mount"
-          hdiutil attach "$DMG_FILE" -mountpoint "$MOUNT_POINT" -nobrowse -noverify
-
-          APP_PATH="$(find "$MOUNT_POINT" -maxdepth 1 -name '*.app' | head -1)"
-          if [ -z "$APP_PATH" ]; then
-            echo "::error::No .app found in DMG"
-            hdiutil detach "$MOUNT_POINT" -force || true
-            exit 1
-          fi
-          echo "MOUNT_POINT=$MOUNT_POINT" >> "$GITHUB_ENV"
-
-          echo "=== Deep code signature verification ==="
-          codesign --verify --deep --strict "$APP_PATH"
-
-          echo "=== Certificate identity ==="
-          codesign -dvv "$APP_PATH" 2>&1 | grep -E "Authority|TeamIdentifier|Runtime"
-
-          echo "=== Gatekeeper assessment ==="
-          spctl --assess --type execute --verbose=2 "$APP_PATH"
-
-          # Apple notarization covers the outermost distribution container.
-          # The DMG ticket covers its contained app; app-level stapling is
-          # required for the separately distributed ZIP and is checked below.
-
-          echo "GitHub draft DMG verification passed"
-
-      - name: Extract ZIP and verify updater app ticket
-        run: |
-          ZIP_DIR="/tmp/flowzero-zip-extract"
-          mkdir -p "$ZIP_DIR"
-          ditto -x -k "$ZIP_FILE" "$ZIP_DIR"
-
-          APP_PATH="$(find "$ZIP_DIR" -maxdepth 2 -type d -name '*.app' -print -quit)"
-          if [ -z "$APP_PATH" ]; then
-            echo "::error::No .app found in draft ZIP"
-            exit 1
-          fi
-
-          echo "=== Updater app deep code signature verification ==="
-          codesign --verify --deep --strict "$APP_PATH"
-
-          echo "=== Updater app Gatekeeper assessment ==="
-          spctl --assess --type execute --verbose=2 "$APP_PATH"
-
-          echo "=== Updater app notarization staple ==="
-          xcrun stapler validate "$APP_PATH"
-
-          echo "GitHub draft ZIP verification passed"
-
-      - name: Cleanup
-        if: always()
-        run: |
-          hdiutil detach "${MOUNT_POINT:-/tmp/flowzero-dmg-mount}" -force 2>/dev/null || true
-          rm -rf /tmp/verify-macos /tmp/flowzero-dmg-mount /tmp/flowzero-zip-extract
-
-  # ============================================
-  # Tier 2 Verification — Windows (installer smoke)
-  # ============================================
-  verify-draft-windows:
-    needs: [prepare, create-release-draft]
-    runs-on: windows-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout source (for smoke test script)
-        uses: actions/checkout@v7
+      - name: Download exact final Windows candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          repository: daymade/flowzero
-          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
-          ref: ${{ needs.prepare.outputs.head_sha }}
+          artifact-ids: ${{ needs.build-windows.outputs.final_artifact_id }}
+          path: ${{ runner.temp }}/windows-final
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
+      - name: Download exact Windows acceptance receipt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          node-version-file: '.nvmrc'
+          artifact-ids: ${{ needs.accept-windows.outputs.verification_artifact_id }}
+          path: ${{ runner.temp }}/windows-verification
 
-      - name: Install dependencies (for smoke script)
-        run: pnpm install --frozen-lockfile
+      - name: Freeze Windows build checkpoint
+        run: >-
+          node .github/scripts/release-platform-checkpoint.mjs
+          --phase build_created
+          --candidate "$RUNNER_TEMP/windows-final/evidence/candidate.json"
+          --output "$RUNNER_TEMP/windows-state/build-created.json"
+
+      - name: Freeze Windows acceptance checkpoint
+        run: >-
+          node .github/scripts/release-platform-checkpoint.mjs
+          --phase platform_verified
+          --candidate "$RUNNER_TEMP/windows-final/evidence/candidate.json"
+          --parent "$RUNNER_TEMP/windows-state/build-created.json"
+          --verification "$RUNNER_TEMP/windows-verification/verification.json"
+          --output "$RUNNER_TEMP/windows-state/platform-verified.json"
+
+      - name: Reject a Windows downgrade before immutable mirror writes
+        run: >-
+          node .github/scripts/assert-platform-release-forward.mjs
+          --channel "${{ needs.prepare.outputs.channel }}"
+          --platform windows-x64
+          --target-tag "${{ needs.prepare.outputs.tag }}"
+          --allow-downgrade false
         env:
-          SKIP_INSTALL_CONFIRM: '1'
-
-      - name: Download Windows assets from the GitHub draft
-        env:
-          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
-          RELEASE_TAG: v${{ needs.prepare.outputs.version }}
-          RELEASE_ID: ${{ needs.create-release-draft.outputs.release_id }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERIFY_DIR="$RUNNER_TEMP/verify-windows"
-          mkdir -p "$VERIFY_DIR"
-          DRAFT_JSON="$RUNNER_TEMP/tinkle_flowzero-verify-windows-release.json"
-          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
-            echo "::error::Draft release id is invalid"
-            exit 1
-          fi
-          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$DRAFT_JSON"
-          if [[ "$(jq -r '.draft' "$DRAFT_JSON")" != 'true' || "$(jq -r '.tag_name' "$DRAFT_JSON")" != "$RELEASE_TAG" ]]; then
-            echo "::error::Release id does not identify the expected draft"
-            exit 1
-          fi
-          jq -r '.assets[] | select(.state == "uploaded") | [.id, .name] | @tsv' "$DRAFT_JSON" \
-            | while IFS=$'\t' read -r ASSET_ID ASSET_NAME; do
-                ASSET_NAME="${ASSET_NAME%$'\r'}"
-                case "$ASSET_NAME" in
-                  *-Setup.exe|*.nupkg|RELEASES)
-                    gh api \
-                      -H 'Accept: application/octet-stream' \
-                      "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" \
-                      > "$VERIFY_DIR/$ASSET_NAME"
-                    ;;
-                esac
-              done
-          shopt -s nullglob
-          SETUP_FILES=("$VERIFY_DIR"/*-Setup.exe)
-          NUPKG_FILES=("$VERIFY_DIR"/*.nupkg)
-          if [ "${#SETUP_FILES[@]}" -ne 1 ] || [ "${#NUPKG_FILES[@]}" -ne 1 ] || [ ! -f "$VERIFY_DIR/RELEASES" ]; then
-            echo "::error::Expected exactly one draft Setup.exe, full.nupkg, and RELEASES asset"
-            find "$VERIFY_DIR" -maxdepth 1 -type f -print
-            exit 1
-          fi
-          echo "VERIFY_DIR=$VERIFY_DIR" >> "$GITHUB_ENV"
-          ls -la "$VERIFY_DIR"
-
-      - name: Run installer smoke test on GitHub draft assets
-        env:
-          FLOWZERO_WINDOWS_INSTALLER_SMOKE_ONLY: '1'
-        run: node scripts/run-packaged-installer-smoke-windows.cjs --release-dir "${{ env.VERIFY_DIR }}"
-
-  # ============================================
-  # Publish (convert draft → live)
-  # ============================================
-  publish-release:
-    needs: [prepare, create-release-draft, verify-draft-macos, verify-draft-windows]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout current release policy
-        uses: actions/checkout@v7
-        with:
-          ref: main
-          persist-credentials: false
-
-      - name: Recheck withdrawn version policy before publication
-        env:
-          RELEASE_TAG: v${{ needs.prepare.outputs.version }}
-        run: node .github/scripts/check-release-tombstone.mjs --tag "$RELEASE_TAG"
-
-      - name: Publish release (draft to live)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: v${{ needs.prepare.outputs.version }}
-          RELEASE_ID: ${{ needs.create-release-draft.outputs.release_id }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET: flowzero-releases
-        run: |
-          set -euo pipefail
-          PRE_RELEASE_JSON="$RUNNER_TEMP/tinkle_flowzero-release-before-publish.json"
-          PRE_IDENTITY_JSON="$RUNNER_TEMP/tinkle_flowzero-release-identity-before-publish.json"
-          POST_RELEASE_JSON="$RUNNER_TEMP/tinkle_flowzero-release-after-publish.json"
-          POST_IDENTITY_JSON="$RUNNER_TEMP/tinkle_flowzero-release-identity-after-publish.json"
 
-          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
-            echo "::error::Draft release id is invalid"
-            exit 1
-          fi
-          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$PRE_RELEASE_JSON"
-          node .github/scripts/release-asset-identity.mjs \
-            --release-json "$PRE_RELEASE_JSON" \
-            --expected-tag "$RELEASE_TAG" \
-            --expected-draft true \
-            --expected-immutable false \
-            --output "$PRE_IDENTITY_JSON"
-
-          while IFS=$'\t' read -r ASSET_NAME ASSET_SIZE ASSET_SHA256; do
-            read -r R2_SIZE R2_SHA256 < <(
-              aws s3api head-object \
-                --bucket "$R2_BUCKET" \
-                --key "releases/$RELEASE_TAG/$ASSET_NAME" \
-                --endpoint-url "$R2_ENDPOINT" \
-                --query '[ContentLength,Metadata.sha256]' \
-                --output text
-            )
-            if [[ "$R2_SIZE" != "$ASSET_SIZE" || "$R2_SHA256" != "$ASSET_SHA256" ]]; then
-              echo "::error::GitHub draft asset no longer matches immutable R2 evidence: $ASSET_NAME"
-              exit 1
-            fi
-          done < <(jq -r '.assets[] | [.name, (.size | tostring), .sha256] | @tsv' "$PRE_IDENTITY_JSON")
-
-          if [[ "$(jq -r '.id' "$PRE_RELEASE_JSON")" != "$RELEASE_ID" ]]; then
-            echo "::error::GitHub draft release id changed"
-            exit 1
-          fi
-          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false > /dev/null
-
-          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$POST_RELEASE_JSON"
-          node .github/scripts/release-asset-identity.mjs \
-            --release-json "$POST_RELEASE_JSON" \
-            --expected-tag "$RELEASE_TAG" \
-            --expected-draft false \
-            --expected-immutable true \
-            --output "$POST_IDENTITY_JSON"
-          if [[ "$(jq -r '.fingerprint' "$PRE_IDENTITY_JSON")" != "$(jq -r '.fingerprint' "$POST_IDENTITY_JSON")" ]]; then
-            echo "::error::GitHub release asset identity changed while publishing"
-            exit 1
-          fi
-          gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null
-          echo "Published release $RELEASE_TAG (draft to live)"
-
-  # ============================================
-  # Promote verified release to update channel
-  # ============================================
-  promote-update-channel:
-    needs: [prepare, publish-release]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout release infrastructure
-        uses: actions/checkout@v7
+      - name: Mirror exact Windows candidate once
+        uses: ./.github/actions/mirror-release-assets
         with:
-          ref: main
-          persist-credentials: false
-
-      - name: Verify channel manifest generator
-        run: node --test .github/scripts/*.test.mjs
-
-      - name: Promote verified release
-        uses: ./.github/actions/promote-update-channel
-        with:
-          release-tag: v${{ needs.prepare.outputs.version }}
-          channel: ${{ needs.prepare.outputs.channel }}
+          candidate-manifest: ${{ runner.temp }}/windows-final/evidence/candidate.json
+          asset-root: ${{ runner.temp }}/windows-final/artifacts
+          output-receipt: ${{ runner.temp }}/windows-state/mirror-receipt.json
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+          R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+          ALIYUN_OSS_ENDPOINT: https://oss-cn-beijing.aliyuncs.com
+          ALIYUN_OSS_REGION: cn-beijing
+          ALIYUN_OSS_BUCKET: flowzero-releases-cn
+          ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
+
+      - name: Freeze Windows mirrored checkpoint
+        run: >-
+          node .github/scripts/release-platform-checkpoint.mjs
+          --phase mirrored
+          --candidate "$RUNNER_TEMP/windows-final/evidence/candidate.json"
+          --parent "$RUNNER_TEMP/windows-state/platform-verified.json"
+          --verification "$RUNNER_TEMP/windows-verification/verification.json"
+          --mirror-receipt "$RUNNER_TEMP/windows-state/mirror-receipt.json"
+          --output "$RUNNER_TEMP/windows-state/mirrored.json"
+
+      - name: Generate Windows platform snapshot
+        run: >-
+          node .github/scripts/generate-platform-channel-manifest.mjs
+          --checkpoint "$RUNNER_TEMP/windows-state/mirrored.json"
+          --output "$RUNNER_TEMP/windows-state/platform-manifest.json"
+
+      - name: Upload durable Windows state checkpoint
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-state-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-state
+          if-no-files-found: error
+          retention-days: 30
+
+  promote-macos:
+    if: needs.prepare.outputs.macos_requested == 'true'
+    needs: [prepare, mirror-macos]
+    runs-on: ubuntu-24.04
+    environment: ${{ needs.prepare.outputs.channel }}-release
+    concurrency:
+      group: flowzero-promote-${{ needs.prepare.outputs.channel }}-macos-arm64
+      cancel-in-progress: false
+    steps:
+      - name: Checkout frozen release infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_infra_sha }}
+          persist-credentials: false
+
+      - name: Download Mac mirrored checkpoint
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.mirror-macos.outputs.state_artifact_id }}
+          path: ${{ runner.temp }}/mac-state
+
+      - name: Promote Mac independently
+        uses: ./.github/actions/promote-update-channel
+        with:
+          platform-manifest: ${{ runner.temp }}/mac-state/platform-manifest.json
+          mirrored-checkpoint: ${{ runner.temp }}/mac-state/mirrored.json
+          allow-downgrade: 'false'
+          output-receipt: ${{ runner.temp }}/mac-promotion.json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET: flowzero-releases
           R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
           ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
+
+      - name: Preserve Mac promotion receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-promotion-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mac-promotion.json
+          if-no-files-found: error
+          retention-days: 30
+
+  promote-windows:
+    if: needs.prepare.outputs.windows_requested == 'true'
+    needs: [prepare, mirror-windows]
+    runs-on: ubuntu-24.04
+    environment: ${{ needs.prepare.outputs.channel }}-release
+    concurrency:
+      group: flowzero-promote-${{ needs.prepare.outputs.channel }}-windows-x64
+      cancel-in-progress: false
+    steps:
+      - name: Checkout frozen release infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_infra_sha }}
+          persist-credentials: false
+
+      - name: Download Windows mirrored checkpoint
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.mirror-windows.outputs.state_artifact_id }}
+          path: ${{ runner.temp }}/windows-state
+
+      - name: Promote Windows independently
+        uses: ./.github/actions/promote-update-channel
+        with:
+          platform-manifest: ${{ runner.temp }}/windows-state/platform-manifest.json
+          mirrored-checkpoint: ${{ runner.temp }}/windows-state/mirrored.json
+          allow-downgrade: 'false'
+          output-receipt: ${{ runner.temp }}/windows-promotion.json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+          R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
+          ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
+
+      - name: Preserve Windows promotion receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-promotion-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-promotion.json
+          if-no-files-found: error
+          retention-days: 30
+
+  canary-macos:
+    if: needs.prepare.outputs.macos_requested == 'true'
+    needs: [prepare, promote-macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout frozen release infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_infra_sha }}
+          persist-credentials: false
+
+      - name: Verify user-facing Mac update channel and one-byte transport
+        run: >-
+          node .github/scripts/verify-channel-canary.mjs
+          --channel "${{ needs.prepare.outputs.channel }}"
+          --platform macos-arm64
+          --version "${{ needs.prepare.outputs.version }}"
+
+  canary-windows:
+    if: needs.prepare.outputs.windows_requested == 'true'
+    needs: [prepare, promote-windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout frozen release infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_infra_sha }}
+          persist-credentials: false
+
+      - name: Verify user-facing Windows update channel and one-byte transport
+        run: >-
+          node .github/scripts/verify-channel-canary.mjs
+          --channel "${{ needs.prepare.outputs.channel }}"
+          --platform windows-x64
+          --version "${{ needs.prepare.outputs.version }}"
+
+  archive-release:
+    if: >-
+      always()
+      && needs.prepare.result == 'success'
+      && (needs.prepare.outputs.macos_requested != 'true' || needs.canary-macos.result == 'success')
+      && (needs.prepare.outputs.windows_requested != 'true' || needs.canary-windows.result == 'success')
+    needs: [prepare, mirror-macos, mirror-windows, canary-macos, canary-windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout frozen release infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_infra_sha }}
+          persist-credentials: false
+
+      - name: Download immutable transaction
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.transaction_artifact_id }}
+          path: ${{ runner.temp }}/archive-input/transaction
+
+      - name: Download final Mac candidate
+        if: needs.prepare.outputs.macos_requested == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.mirror-macos.outputs.final_artifact_id }}
+          path: ${{ runner.temp }}/archive-input/macos-arm64/final
+
+      - name: Download Mac verification
+        if: needs.prepare.outputs.macos_requested == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.mirror-macos.outputs.verification_artifact_id }}
+          path: ${{ runner.temp }}/archive-input/macos-arm64/verification
+
+      - name: Download final Windows candidate
+        if: needs.prepare.outputs.windows_requested == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.mirror-windows.outputs.final_artifact_id }}
+          path: ${{ runner.temp }}/archive-input/windows-x64/final
+
+      - name: Download Windows verification
+        if: needs.prepare.outputs.windows_requested == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.mirror-windows.outputs.verification_artifact_id }}
+          path: ${{ runner.temp }}/archive-input/windows-x64/verification
+
+      - name: Assemble exact archive manifest and asset set
+        run: >-
+          node .github/scripts/assemble-release-archive.mjs
+          --transaction "$RUNNER_TEMP/archive-input/transaction/release-transaction.json"
+          --input-root "$RUNNER_TEMP/archive-input"
+          --output-root "$RUNNER_TEMP/archive-assets"
+
+      - name: Create or resume immutable GitHub archive
+        run: >-
+          node .github/scripts/archive-release.mjs
+          --manifest "$RUNNER_TEMP/archive-assets/release-manifest.json"
+          --asset-root "$RUNNER_TEMP/archive-assets"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_ADMIN_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}

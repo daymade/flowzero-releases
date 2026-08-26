@@ -1,0 +1,161 @@
+name: Repair or Roll Back Published Platform
+
+on:
+  workflow_dispatch:
+    inputs:
+      toolkit_sha:
+        description: Exact flowzero-releases commit SHA used for repair
+        required: true
+        type: string
+      channel:
+        description: Target update channel
+        required: true
+        type: choice
+        options: [stable, beta]
+      platform:
+        description: Platform to repair or restore
+        required: true
+        type: choice
+        options: [macos-arm64, windows-x64]
+      tag:
+        description: Immutable GitHub Release tag used as repair source
+        required: true
+        type: string
+      allow_downgrade:
+        description: Explicitly allow rollback to an older published tag
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    environment: ${{ inputs.channel }}-release
+    concurrency:
+      group: flowzero-promote-${{ inputs.channel }}-${{ inputs.platform }}
+      cancel-in-progress: false
+    steps:
+      - name: Validate exact repair toolkit
+        run: >-
+          node -e "if(!/^[a-f0-9]{40}$/.test(process.env.TOOLKIT_SHA))throw new Error('invalid toolkit SHA')"
+        env:
+          TOOLKIT_SHA: ${{ inputs.toolkit_sha }}
+
+      - name: Checkout explicit repair toolkit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.toolkit_sha }}
+          persist-credentials: false
+
+      - name: Rehydrate exact platform candidate from immutable GitHub archive
+        run: >-
+          node .github/scripts/rehydrate-platform-archive.mjs
+          --tag "${{ inputs.tag }}"
+          --platform "${{ inputs.platform }}"
+          --output-root "$RUNNER_TEMP/rehydrated"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Freeze rehydrated build checkpoint
+        run: >-
+          node .github/scripts/release-platform-checkpoint.mjs
+          --phase build_created
+          --candidate "$RUNNER_TEMP/rehydrated/evidence/candidate.json"
+          --output "$RUNNER_TEMP/state/build-created.json"
+
+      - name: Freeze archived platform verification checkpoint
+        run: >-
+          node .github/scripts/release-platform-checkpoint.mjs
+          --phase platform_verified
+          --candidate "$RUNNER_TEMP/rehydrated/evidence/candidate.json"
+          --parent "$RUNNER_TEMP/state/build-created.json"
+          --verification "$RUNNER_TEMP/rehydrated/evidence/verification.json"
+          --output "$RUNNER_TEMP/state/platform-verified.json"
+
+      - name: Reject an unapproved downgrade before mirror repair
+        run: >-
+          node .github/scripts/assert-platform-release-forward.mjs
+          --channel "${{ inputs.channel }}"
+          --platform "${{ inputs.platform }}"
+          --target-tag "${{ inputs.tag }}"
+          --allow-downgrade "${{ inputs.allow_downgrade }}"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+
+      - name: Repair exact immutable mirror objects
+        uses: ./.github/actions/mirror-release-assets
+        with:
+          candidate-manifest: ${{ runner.temp }}/rehydrated/evidence/candidate.json
+          asset-root: ${{ runner.temp }}/rehydrated/artifacts
+          output-receipt: ${{ runner.temp }}/state/mirror-receipt.json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+          R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+          ALIYUN_OSS_ENDPOINT: https://oss-cn-beijing.aliyuncs.com
+          ALIYUN_OSS_REGION: cn-beijing
+          ALIYUN_OSS_BUCKET: flowzero-releases-cn
+          ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
+
+      - name: Freeze repaired mirrored checkpoint
+        run: >-
+          node .github/scripts/release-platform-checkpoint.mjs
+          --phase mirrored
+          --candidate "$RUNNER_TEMP/rehydrated/evidence/candidate.json"
+          --parent "$RUNNER_TEMP/state/platform-verified.json"
+          --verification "$RUNNER_TEMP/rehydrated/evidence/verification.json"
+          --mirror-receipt "$RUNNER_TEMP/state/mirror-receipt.json"
+          --output "$RUNNER_TEMP/state/mirrored.json"
+
+      - name: Generate repaired platform manifest
+        run: >-
+          node .github/scripts/generate-platform-channel-manifest.mjs
+          --checkpoint "$RUNNER_TEMP/state/mirrored.json"
+          --output "$RUNNER_TEMP/state/platform-manifest.json"
+
+      - name: Promote repaired platform pointer
+        uses: ./.github/actions/promote-update-channel
+        with:
+          platform-manifest: ${{ runner.temp }}/state/platform-manifest.json
+          mirrored-checkpoint: ${{ runner.temp }}/state/mirrored.json
+          allow-downgrade: ${{ inputs.allow_downgrade }}
+          output-receipt: ${{ runner.temp }}/state/promotion-receipt.json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+          R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
+          ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
+
+      - name: Verify user-facing repaired channel
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          node .github/scripts/verify-channel-canary.mjs \
+            --channel "${{ inputs.channel }}" \
+            --platform "${{ inputs.platform }}" \
+            --version "$VERSION"
+        env:
+          TAG: ${{ inputs.tag }}
+
+      - name: Preserve repaired state and receipts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: repaired-${{ inputs.channel }}-${{ inputs.platform }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/state
+          if-no-files-found: error
+          retention-days: 30
+

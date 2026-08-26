@@ -56,3 +56,31 @@ test('allows only an explicit downgrade and validates current manifest identity'
     currentManifest: current('stable', null, 'no_release'),
   }).status, 'replacing_no_release');
 });
+
+test('applies the same ordering contract to one independent platform pointer', () => {
+  const manifest = {
+    schema: 'flowzero.update_platform_manifest.v1',
+    channel: 'beta',
+    platform: 'windows-x64',
+    state: 'published',
+    tag: 'v1.3.0-beta.2',
+  };
+  assert.equal(assertChannelVersionForward({
+    channel: 'beta',
+    platform: 'windows-x64',
+    targetTag: 'v1.3.0-beta.3',
+    currentManifest: manifest,
+  }).status, 'forward');
+  assert.throws(() => assertChannelVersionForward({
+    channel: 'beta',
+    platform: 'windows-x64',
+    targetTag: 'v1.2.0-beta.9',
+    currentManifest: manifest,
+  }), /Refusing channel downgrade/u);
+  assert.throws(() => assertChannelVersionForward({
+    channel: 'beta',
+    platform: 'macos-arm64',
+    targetTag: 'v1.3.0-beta.3',
+    currentManifest: manifest,
+  }), /identity/u);
+});

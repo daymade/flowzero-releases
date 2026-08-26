@@ -9,6 +9,14 @@ const IMMUTABLE_CHANNEL_KEY =
 const IMMUTABLE_CHANNEL_STATE_KEY =
   'channels/stable/states/no-release.json';
 const CURRENT_CHANNEL_KEY = 'channels/beta/current.json';
+const IMMUTABLE_PLATFORM_CHANNEL_KEY =
+  'channels/beta/platforms/macos-arm64/releases/v0.1.2-beta.8.json';
+const IMMUTABLE_PLATFORM_CHECKPOINT_KEY =
+  'channels/beta/platforms/macos-arm64/checkpoints/v0.1.2-beta.8.json';
+const WITHDRAWN_PLATFORM_STATE_KEY =
+  'channels/beta/platforms/macos-arm64/states/withdrawn-v0.1.2-beta.8.json';
+const CURRENT_PLATFORM_CHANNEL_KEY =
+  'channels/beta/platforms/macos-arm64/current.json';
 
 function makeObject(body = 'release') {
   return {
@@ -82,6 +90,26 @@ test('serves immutable release, immutable state, and current channel snapshots w
     new Request(`https://example.test/${CURRENT_CHANNEL_KEY}?promotion=test`),
     currentEnvironment.env,
   );
+  const platformImmutableEnvironment = makeEnvironment();
+  const platformImmutable = await handleRequest(
+    new Request(`https://example.test/${IMMUTABLE_PLATFORM_CHANNEL_KEY}`),
+    platformImmutableEnvironment.env,
+  );
+  const platformCurrentEnvironment = makeEnvironment();
+  const platformCurrent = await handleRequest(
+    new Request(`https://example.test/${CURRENT_PLATFORM_CHANNEL_KEY}`),
+    platformCurrentEnvironment.env,
+  );
+  const checkpointEnvironment = makeEnvironment();
+  const checkpoint = await handleRequest(
+    new Request(`https://example.test/${IMMUTABLE_PLATFORM_CHECKPOINT_KEY}`),
+    checkpointEnvironment.env,
+  );
+  const withdrawnStateEnvironment = makeEnvironment();
+  const withdrawnState = await handleRequest(
+    new Request(`https://example.test/${WITHDRAWN_PLATFORM_STATE_KEY}`),
+    withdrawnStateEnvironment.env,
+  );
 
   assert.equal(immutable.status, 200);
   assert.equal(
@@ -98,6 +126,20 @@ test('serves immutable release, immutable state, and current channel snapshots w
     current.headers.get('Cache-Control'),
     'public, max-age=0, must-revalidate, stale-if-error=86400',
   );
+  assert.equal(platformImmutable.status, 200);
+  assert.equal(
+    platformImmutable.headers.get('Cache-Control'),
+    'public, max-age=31536000, immutable',
+  );
+  assert.equal(platformCurrent.status, 200);
+  assert.equal(
+    platformCurrent.headers.get('Cache-Control'),
+    'public, max-age=0, must-revalidate, stale-if-error=86400',
+  );
+  assert.equal(checkpoint.status, 200);
+  assert.equal(checkpoint.headers.get('Cache-Control'), 'public, max-age=31536000, immutable');
+  assert.equal(withdrawnState.status, 200);
+  assert.equal(withdrawnState.headers.get('Cache-Control'), 'public, max-age=31536000, immutable');
   assert.deepEqual(
     immutableEnvironment.calls,
     [['get', IMMUTABLE_CHANNEL_KEY, undefined]],
@@ -110,6 +152,16 @@ test('serves immutable release, immutable state, and current channel snapshots w
     currentEnvironment.calls,
     [['get', CURRENT_CHANNEL_KEY, undefined]],
   );
+  assert.deepEqual(
+    platformImmutableEnvironment.calls,
+    [['get', IMMUTABLE_PLATFORM_CHANNEL_KEY, undefined]],
+  );
+  assert.deepEqual(
+    platformCurrentEnvironment.calls,
+    [['get', CURRENT_PLATFORM_CHANNEL_KEY, undefined]],
+  );
+  assert.deepEqual(checkpointEnvironment.calls, [['get', IMMUTABLE_PLATFORM_CHECKPOINT_KEY, undefined]]);
+  assert.deepEqual(withdrawnStateEnvironment.calls, [['get', WITHDRAWN_PLATFORM_STATE_KEY, undefined]]);
 });
 
 test('serves HEAD without reading the object body', async () => {
