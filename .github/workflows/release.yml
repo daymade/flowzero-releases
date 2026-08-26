@@ -100,7 +100,7 @@ jobs:
           repository: daymade/flowzero
           token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
           ref: ${{ needs.prepare.outputs.head_sha }}
-          lfs: true
+          lfs: false
           persist-credentials: false
 
       - name: Prove the exact source SHA is on pushed private main
@@ -144,7 +144,7 @@ jobs:
         run: pnpm run test:source:ci
 
       - name: Verify release policy inputs
-        run: pnpm run license:gate
+        run: pnpm run license:source:ci
 
       - name: Verify active business battle
         run: pnpm run context:gate

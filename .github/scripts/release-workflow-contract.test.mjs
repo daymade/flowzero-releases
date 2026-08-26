@@ -65,12 +65,17 @@ test('source qualification runs once and platform builds consume the exact quali
   const windowsBuild = jobBlock('build-windows');
   assert.match(qualification, /pnpm run lint/u);
   assert.match(qualification, /pnpm run test:source:ci/u);
+  assert.match(qualification, /pnpm run license:source:ci/u);
+  assert.match(qualification, /lfs: false/u);
+  assert.doesNotMatch(qualification, /lfs: true/u);
   assert.doesNotMatch(qualification, /pnpm run verify:media-runtime/u);
   assert.doesNotMatch(qualification, /build-meeting-e2e-fixtures\.cjs/u);
   assert.doesNotMatch(macBuild, /pnpm run test:source:ci/u);
   assert.doesNotMatch(windowsBuild, /pnpm run test:source:ci/u);
   assert.match(macBuild, /pnpm run test:native-media:ci/u);
   assert.match(windowsBuild, /pnpm run test:native-media:ci/u);
+  assert.match(macBuild, /lfs: true/u);
+  assert.match(windowsBuild, /lfs: true/u);
   assert.match(macBuild, /pnpm run release:build:ci/u);
   assert.match(windowsBuild, /pnpm run release:build:ci/u);
   for (const block of [qualification, macBuild, windowsBuild]) {
