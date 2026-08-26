@@ -56,10 +56,21 @@ export function splitLegacyManifest({ legacy, platform, sourceHeadSha }) {
     const setup = oneAsset(legacy.assets, (asset) => asset.name.endsWith('-Setup.exe'), 'Setup.exe');
     const nupkg = oneAsset(legacy.assets, (asset) => asset.name.endsWith('.nupkg'), 'nupkg');
     const releases = oneAsset(legacy.assets, (asset) => asset.name === 'RELEASES', 'RELEASES');
-    assert(typeof legacy.squirrel_releases === 'string' && legacy.squirrel_releases.includes(nupkg.name), 'legacy RELEASES nupkg mismatch');
+    const rows = typeof legacy.squirrel_releases === 'string'
+      ? legacy.squirrel_releases.trim().split(/\r?\n/u).filter(Boolean)
+      : [];
+    const columns = rows.length === 1 ? rows[0].split(/\s+/u) : [];
+    assert(
+      rows.length === 1
+      && columns.length === 3
+      && /^[a-f0-9]{40}$/iu.test(columns[0] || '')
+      && columns[1] === nupkg.name
+      && Number(columns[2]) === nupkg.size,
+      'legacy RELEASES must bind one exact nupkg row',
+    );
     assets = [
       roleAsset(setup, 'windows_setup'),
-      roleAsset(nupkg, 'windows_nupkg'),
+      { ...roleAsset(nupkg, 'windows_nupkg'), sha1: columns[0].toLowerCase() },
       roleAsset(releases, 'windows_releases'),
     ];
     update = { squirrel_releases: legacy.squirrel_releases };
@@ -72,6 +83,7 @@ export function splitLegacyManifest({ legacy, platform, sourceHeadSha }) {
     state: 'published',
     tag: legacy.tag,
     version: legacy.tag.slice(1),
+    variant: 'standard',
     published_at: legacy.published_at,
     notes: legacy.notes,
     transaction_id: transactionId,

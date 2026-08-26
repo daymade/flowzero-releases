@@ -325,6 +325,14 @@ jobs:
           CI: 'true'
           GITHUB_ACTIONS: 'true'
 
+      - name: Preserve accepted Apple evidence with the final candidate
+        run: |
+          set -euo pipefail
+          cp apps/desktop/out/notarize-stage/notarization-state.json \
+            "$RUNNER_TEMP/mac-final/evidence/notarization-state.json"
+          cp apps/desktop/out/notarize-stage/apple-notary-log.json \
+            "$RUNNER_TEMP/mac-final/evidence/apple-notary-log.json"
+
       - name: Upload immutable final Mac candidate
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

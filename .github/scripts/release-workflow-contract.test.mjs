@@ -76,6 +76,8 @@ test('notarization resumes from an immutable artifact ID without reinstalling or
   assert.match(finalizer, /artifact-ids: \$\{\{ needs\.build-macos\.outputs\.stage_artifact_id \}\}/u);
   assert.match(finalizer, /release-notarize-ci\.cjs resume/u);
   assert.match(finalizer, /release-finalize-macos\.cjs/u);
+  assert.match(finalizer, /apple-notary-log\.json/u);
+  assert.match(finalizer, /notarization-state\.json/u);
   assert.doesNotMatch(finalizer, /pnpm install|electron-forge|release:build:ci/u);
   assert.match(finalizer, /retention-days: 30/u);
   assert.doesNotMatch(workflow, /delete-artifact/u);

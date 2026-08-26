@@ -49,6 +49,7 @@ export function buildPlatformChannelManifest({
     state: 'published',
     tag: payload.release.tag,
     version: payload.release.version,
+    variant: payload.release.variant,
     published_at: publishedAt,
     notes: resolvedNotes,
     transaction_id: payload.transaction_id,

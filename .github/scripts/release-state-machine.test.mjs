@@ -10,6 +10,7 @@ import {
 import {
   buildPlatformCheckpoint,
 } from './release-platform-checkpoint.mjs';
+import { splitLegacyManifest } from './split-legacy-channel-manifest.mjs';
 import {
   buildReleaseArchiveManifest,
   validateReleaseArchiveManifest,
@@ -354,6 +355,7 @@ test('advances macOS independently through build, business verification, mirror,
 
   assert.equal(manifest.platform, 'macos-arm64');
   assert.equal(manifest.tag, 'v1.2.3-beta.4');
+  assert.equal(manifest.variant, 'standard');
   assert.equal(manifest.checkpoint_id, mirrored.checkpoint_id);
   assert.equal(manifest.assets.length, 3);
 });
@@ -469,4 +471,57 @@ test('refuses phase skipping and mirror receipts that do not prove every object'
     }),
     /does not prove/,
   );
+});
+
+test('legacy Windows migration preserves the exact Squirrel SHA-1 binding', () => {
+  const nupkgName = 'Flowzero-1.2.3-beta4-full.nupkg';
+  const nupkgSha1 = 'd'.repeat(40);
+  const legacy = {
+    schema: 'flowzero.update_channel_manifest.v1',
+    channel: 'beta',
+    state: 'published',
+    tag: 'v1.2.3-beta.4',
+    published_at: '2026-08-26T00:00:00Z',
+    notes: 'Legacy beta',
+    assets: [
+      {
+        name: 'Flowzero-1.2.3-beta.4-Setup.exe',
+        content_type: 'application/octet-stream',
+        size: 300,
+        sha256: sha('4'),
+      },
+      {
+        name: nupkgName,
+        content_type: 'application/octet-stream',
+        size: 200,
+        sha256: sha('5'),
+      },
+      {
+        name: 'RELEASES',
+        content_type: 'application/octet-stream',
+        size: 100,
+        sha256: sha('6'),
+      },
+    ],
+    squirrel_releases: `${nupkgSha1} ${nupkgName} 200\n`,
+  };
+  const migrated = splitLegacyManifest({
+    legacy,
+    platform: 'windows-x64',
+    sourceHeadSha: sourceSha,
+  });
+  assert.equal(
+    migrated.assets.find((asset) => asset.role === 'windows_nupkg').sha1,
+    nupkgSha1,
+  );
+  assert.equal(migrated.variant, 'standard');
+
+  assert.throws(() => splitLegacyManifest({
+    legacy: {
+      ...legacy,
+      squirrel_releases: `${legacy.squirrel_releases}${nupkgSha1} obsolete.nupkg 200\n`,
+    },
+    platform: 'windows-x64',
+    sourceHeadSha: sourceSha,
+  }), /one exact nupkg row/u);
 });
