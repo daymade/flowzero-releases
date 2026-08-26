@@ -65,7 +65,7 @@ export function splitLegacyManifest({ legacy, platform, sourceHeadSha }) {
       && columns.length === 3
       && /^[a-f0-9]{40}$/iu.test(columns[0] || '')
       && columns[1] === nupkg.name
-      && Number(columns[2]) === nupkg.size,
+      && columns[2] === String(nupkg.size),
       'legacy RELEASES must bind one exact nupkg row',
     );
     assets = [

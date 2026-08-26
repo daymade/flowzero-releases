@@ -95,7 +95,7 @@ export function validateCandidateEnvelope(envelope) {
       && /^[a-f0-9]{40}$/i.test(columns[0] || '')
       && columns[0].toLowerCase() === nupkg.sha1
       && columns[1] === nupkg.name
-      && Number(columns[2]) === nupkg.size,
+      && columns[2] === String(nupkg.size),
       'candidate Windows RELEASES does not bind the exact nupkg',
     );
   }

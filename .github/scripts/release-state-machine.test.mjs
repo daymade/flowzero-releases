@@ -384,6 +384,13 @@ test('validates the exact Windows Squirrel candidate and timestamped installer r
     () => buildPlatformCheckpoint({ phase: 'build_created', candidate: extraRow }),
     /exact nupkg/u,
   );
+  const nonCanonicalSize = windowsCandidate(intent());
+  nonCanonicalSize.candidate.update.squirrel_releases = `${'d'.repeat(40)} Flowzero-1.2.3-beta4-full.nupkg 0200\n`;
+  nonCanonicalSize.candidate_id = contentId(nonCanonicalSize.candidate);
+  assert.throws(
+    () => buildPlatformCheckpoint({ phase: 'build_created', candidate: nonCanonicalSize }),
+    /exact nupkg/u,
+  );
 });
 
 test('refuses to promote macOS without the packaged local multi-speaker business outcome', () => {
