@@ -94,6 +94,8 @@ test('every downstream release job is gated by the durable transaction owner cla
     'qualify-source',
     'build-macos',
     'finalize-macos',
+    'accept-macos-fixture',
+    'accept-macos-live-stepfun',
     'accept-macos',
     'build-windows',
     'accept-windows',
@@ -114,10 +116,19 @@ test('every downstream release job is gated by the durable transaction owner cla
 });
 
 test('macOS and Windows have independent build, mirror, promotion, and canary DAGs', () => {
+  const macFixtureAcceptance = jobBlock('accept-macos-fixture');
+  const macLiveAcceptance = jobBlock('accept-macos-live-stepfun');
+  const macAcceptance = jobBlock('accept-macos');
   const macMirror = jobBlock('mirror-macos');
   const windowsMirror = jobBlock('mirror-windows');
   const macPromote = jobBlock('promote-macos');
   const windowsPromote = jobBlock('promote-windows');
+  assert.match(macFixtureAcceptance, /needs: \[prepare, finalize-macos\]/u);
+  assert.match(macLiveAcceptance, /needs: \[prepare, finalize-macos\]/u);
+  assert.match(
+    macAcceptance,
+    /needs: \[prepare, accept-macos-fixture, accept-macos-live-stepfun\]/u,
+  );
   assert.match(macMirror, /needs: \[prepare, finalize-macos, accept-macos\]/u);
   assert.doesNotMatch(macMirror, /build-windows|accept-windows/u);
   assert.match(windowsMirror, /needs: \[prepare, build-windows, accept-windows\]/u);
@@ -129,17 +140,37 @@ test('macOS and Windows have independent build, mirror, promotion, and canary DA
 });
 
 test('the release-blocking Mac verifier is the packaged local multi-speaker business journey', () => {
+  const fixtureAcceptance = jobBlock('accept-macos-fixture');
+  const liveAcceptance = jobBlock('accept-macos-live-stepfun');
   const acceptance = jobBlock('accept-macos');
   const mirror = jobBlock('mirror-macos');
-  assert.match(acceptance, /build-meeting-e2e-fixtures\.cjs/u);
-  assert.match(acceptance, /--suite macos-voice-context/u);
-  assert.match(acceptance, /--suite macos-live-stepfun-timeline/u);
+  assert.match(fixtureAcceptance, /build-meeting-e2e-fixtures\.cjs/u);
+  assert.match(fixtureAcceptance, /--suite macos-voice-context/u);
+  assert.doesNotMatch(fixtureAcceptance, /--suite macos-live-stepfun-timeline/u);
+  assert.match(liveAcceptance, /build-meeting-e2e-fixtures\.cjs/u);
+  assert.match(liveAcceptance, /--suite macos-live-stepfun-timeline/u);
+  assert.doesNotMatch(liveAcceptance, /--suite macos-voice-context/u);
   assert.match(
-    acceptance,
+    liveAcceptance,
     /FLOWZERO_VERIFY_STEPFUN_API_KEY: \$\{\{ secrets\.FLOWZERO_STEPFUN_API_KEY \}\}/u,
   );
+  assert.match(fixtureAcceptance, /--subject-file[\s\S]*\.dmg/u);
+  assert.match(liveAcceptance, /--subject-file[\s\S]*\.dmg/u);
+  assert.match(
+    acceptance,
+    /needs: \[prepare, accept-macos-fixture, accept-macos-live-stepfun\]/u,
+  );
+  assert.match(
+    acceptance,
+    /artifact-ids: \$\{\{ needs\.accept-macos-fixture\.outputs\.verification_artifact_id \}\}/u,
+  );
+  assert.match(
+    acceptance,
+    /artifact-ids: \$\{\{ needs\.accept-macos-live-stepfun\.outputs\.verification_artifact_id \}\}/u,
+  );
+  assert.match(acceptance, /verification\.json/u);
   assert.match(acceptance, /live-stepfun-timeline\.json/u);
-  assert.match(acceptance, /--subject-file[\s\S]*\.dmg/u);
+  assert.doesNotMatch(acceptance, /--suite|pnpm install|actions\/checkout/u);
   assert.equal(
     (mirror.match(/--verification "\$RUNNER_TEMP\/mac-verification\//gu) || []).length,
     4,
@@ -231,6 +262,8 @@ test('GitHub archive is a presentation layer and does not gate platform promotio
   assert.doesNotMatch(windowsPromote, /archive-release/u);
   assert.match(archive, /permissions:[\s\S]*contents: write/u);
   assert.doesNotMatch(jobBlock('build-macos'), /contents: write/u);
+  assert.doesNotMatch(jobBlock('accept-macos-fixture'), /contents: write/u);
+  assert.doesNotMatch(jobBlock('accept-macos-live-stepfun'), /contents: write/u);
   assert.doesNotMatch(jobBlock('accept-macos'), /contents: write/u);
 });
 
