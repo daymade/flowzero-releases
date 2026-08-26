@@ -46,6 +46,9 @@ test('the download gateway has remote CD with exact credentials and two-route re
     assert.match(value, /^[^@]+@[a-f0-9]{40}$/u, `un-pinned gateway deploy action: ${value}`);
   }
   assert.match(workerDeployWorkflow, /workflow_dispatch:/u);
+  assert.match(workerDeployWorkflow, /test "\$GITHUB_REF" = "refs\/heads\/main"/u);
+  assert.match(workerDeployWorkflow, /ref: \$\{\{ github\.sha \}\}/u);
+  assert.match(workerDeployWorkflow, /version: 10\.28\.1/u);
   assert.match(workerDeployWorkflow, /workers\/release-download\/\*\*/u);
   assert.match(workerDeployWorkflow, /pnpm run deploy/u);
   assert.match(workerDeployWorkflow, /secrets\.CLOUDFLARE_API_KEY/u);
