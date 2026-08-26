@@ -64,9 +64,15 @@ test('source qualification runs once and platform builds consume the exact quali
   const macBuild = jobBlock('build-macos');
   const windowsBuild = jobBlock('build-windows');
   assert.match(qualification, /pnpm run lint/u);
-  assert.match(qualification, /pnpm run test/u);
-  assert.doesNotMatch(macBuild, /pnpm run test/u);
-  assert.doesNotMatch(windowsBuild, /pnpm run test/u);
+  assert.match(qualification, /pnpm run test:source:ci/u);
+  assert.doesNotMatch(qualification, /pnpm run verify:media-runtime/u);
+  assert.doesNotMatch(qualification, /build-meeting-e2e-fixtures\.cjs/u);
+  assert.doesNotMatch(macBuild, /pnpm run test:source:ci/u);
+  assert.doesNotMatch(windowsBuild, /pnpm run test:source:ci/u);
+  assert.match(macBuild, /pnpm run test:native-media:ci/u);
+  assert.match(windowsBuild, /pnpm run test:native-media:ci/u);
+  assert.match(macBuild, /pnpm run release:build:ci/u);
+  assert.match(windowsBuild, /pnpm run release:build:ci/u);
   for (const block of [qualification, macBuild, windowsBuild]) {
     assert.match(block, /ref: \$\{\{ needs\.prepare\.outputs\.head_sha \}\}/u);
   }
@@ -90,6 +96,7 @@ test('macOS and Windows have independent build, mirror, promotion, and canary DA
 test('the release-blocking Mac verifier is the packaged local multi-speaker business journey', () => {
   const acceptance = jobBlock('accept-macos');
   const mirror = jobBlock('mirror-macos');
+  assert.match(acceptance, /build-meeting-e2e-fixtures\.cjs/u);
   assert.match(acceptance, /--suite macos-voice-context/u);
   assert.match(acceptance, /--subject-file[\s\S]*\.dmg/u);
   assert.match(mirror, /needs: \[prepare, finalize-macos, accept-macos\]/u);

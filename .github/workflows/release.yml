@@ -141,7 +141,7 @@ jobs:
         run: pnpm run lint
 
       - name: Run source test contract once
-        run: pnpm run test
+        run: pnpm run test:source:ci
 
       - name: Verify release policy inputs
         run: pnpm run license:gate
@@ -215,6 +215,9 @@ jobs:
         run: pnpm install --frozen-lockfile
         env:
           SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Verify the native media application seam
+        run: pnpm run test:native-media:ci
 
       - name: Build and sign final DMG candidate
         run: >-
@@ -474,6 +477,9 @@ jobs:
         run: pnpm install --frozen-lockfile
         env:
           SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Verify the native media application seam
+        run: pnpm run test:native-media:ci
 
       - name: Build signed Windows release set
         run: >-
