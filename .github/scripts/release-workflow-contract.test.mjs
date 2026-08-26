@@ -12,8 +12,13 @@ const promoteAction = await readFile(new URL('../actions/promote-update-channel/
 const mirrorScript = await readFile(new URL('./mirror-release-assets.mjs', import.meta.url), 'utf8');
 const promoteScript = await readFile(new URL('./promote-platform-channel.mjs', import.meta.url), 'utf8');
 const archiveScript = await readFile(new URL('./archive-release.mjs', import.meta.url), 'utf8');
+const resumeMirrorWorkflow = await readFile(
+  new URL('../workflows/resume-platform-mirror.yml', import.meta.url),
+  'utf8',
+);
 const operatorWorkflows = await Promise.all([
   'mirror-published-release.yml',
+  'resume-platform-mirror.yml',
   'restore-platform-channel.yml',
   'repair-published-platform.yml',
   'withdraw-platform-channel.yml',
@@ -127,7 +132,8 @@ test('mirror and promotion are manifest-driven and never rediscover or fully red
   assert.doesNotMatch(mirrorScript, /s3api', 'get-object/u);
   assert.doesNotMatch(mirrorScript, /api', 'get-object/u);
   assert.match(mirrorScript, /--checksum-sha256/u);
-  assert.match(mirrorScript, /--content-md5/u);
+  assert.doesNotMatch(mirrorScript, /'--content-md5'/u);
+  assert.match(mirrorScript, /etag === asset\.md5Hex/u);
   assert.match(promoteAction, /mirrored-checkpoint/u);
   assert.match(promoteScript, /currentKey = `\$\{baseKey\}\/current\.json`/u);
   assert.match(promoteScript, /--if-match/u);
@@ -135,6 +141,30 @@ test('mirror and promotion are manifest-driven and never rediscover or fully red
   assert.doesNotMatch(promoteScript, /gh release download/u);
   assert.doesNotMatch(promoteScript, /curl[\s\S]*--output[^\n]*(?!\/dev\/null)/u);
   assert.match(promoteScript, /checkpoints\/\$\{manifest\.tag\}\.json/u);
+});
+
+test('a failed mirror resumes from exact accepted artifacts without rebuilding', () => {
+  const uses = [...resumeMirrorWorkflow.matchAll(/^\s+uses:\s+([^\s#]+)/gmu)]
+    .map((match) => match[1]);
+  for (const value of uses.filter((entry) => !entry.startsWith('./'))) {
+    assert.match(value, /^[^@]+@[a-f0-9]{40}$/u, `un-pinned recovery action: ${value}`);
+  }
+  assert.match(resumeMirrorWorkflow, /ref: \$\{\{ inputs\.toolkit_sha \}\}/u);
+  assert.match(resumeMirrorWorkflow, /artifact-ids: \$\{\{ inputs\.candidate_artifact_id \}\}/u);
+  assert.match(resumeMirrorWorkflow, /artifact-ids: \$\{\{ inputs\.verification_artifact_id \}\}/u);
+  assert.equal((resumeMirrorWorkflow.match(/run-id: \$\{\{ inputs\.source_run_id \}\}/gu) || []).length, 2);
+  assert.equal((resumeMirrorWorkflow.match(/github-token: \$\{\{ github\.token \}\}/gu) || []).length, 2);
+  assert.match(resumeMirrorWorkflow, /validate-platform-artifact-recovery\.mjs/u);
+  assert.match(resumeMirrorWorkflow, /--phase build_created/u);
+  assert.match(resumeMirrorWorkflow, /--phase platform_verified/u);
+  assert.match(resumeMirrorWorkflow, /uses: \.\/\.github\/actions\/mirror-release-assets/u);
+  assert.match(resumeMirrorWorkflow, /--phase mirrored/u);
+  assert.match(resumeMirrorWorkflow, /uses: \.\/\.github\/actions\/promote-update-channel/u);
+  assert.match(resumeMirrorWorkflow, /verify-channel-canary\.mjs/u);
+  assert.doesNotMatch(
+    resumeMirrorWorkflow,
+    /pnpm install|release:build:ci|electron-forge|notarytool|release-notarize-ci/u,
+  );
 });
 
 test('GitHub archive is a presentation layer and does not gate platform promotion', () => {
@@ -189,7 +219,7 @@ test('every operator path shares the same non-cancelling per-platform writer loc
     assert.match(source, /group: flowzero-promote-\$\{\{ inputs\.channel \}\}-\$\{\{ inputs\.platform \}\}/u);
     assert.match(source, /cancel-in-progress: false/u);
   }
-  assert.match(operatorWorkflows[1], /checkpoints\/\$\{\{ inputs\.tag \}\}\.json/u);
-  assert.match(operatorWorkflows[2], /rehydrate-platform-archive\.mjs/u);
-  assert.match(operatorWorkflows[3], /withdraw-platform-channel\.mjs/u);
+  assert.match(operatorWorkflows[2], /checkpoints\/\$\{\{ inputs\.tag \}\}\.json/u);
+  assert.match(operatorWorkflows[3], /rehydrate-platform-archive\.mjs/u);
+  assert.match(operatorWorkflows[4], /withdraw-platform-channel\.mjs/u);
 });

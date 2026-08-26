@@ -20,6 +20,8 @@ import {
 import {
   buildPlatformChannelManifest,
 } from './generate-platform-channel-manifest.mjs';
+import { buildOssPutObjectArgs } from './mirror-release-assets.mjs';
+import { validatePlatformArtifactRecovery } from './validate-platform-artifact-recovery.mjs';
 
 const contentId = value => `sha256:${createHash('sha256').update(canonicalJson(value)).digest('hex')}`;
 const sha = character => character.repeat(64);
@@ -259,6 +261,64 @@ test('validates the same content-addressed intent emitted by the source reposito
     () => validateReleaseIntent({ ...releaseIntent, transaction_id: `sha256:${sha('9')}` }),
     /transaction id/,
   );
+});
+
+test('binds mirror recovery to one accepted artifact pair and the requested source run', () => {
+  const candidate = macCandidate(intent());
+  const recovery = validatePlatformArtifactRecovery({
+    candidate,
+    verification: macVerification(candidate),
+    sourceRunId: '123',
+    candidateArtifactId: '456',
+    verificationArtifactId: '789',
+    toolkitSha: 'c'.repeat(40),
+    channel: 'beta',
+    platform: 'macos-arm64',
+  });
+  assert.equal(recovery.candidate_id, candidate.candidate_id);
+  assert.equal(recovery.version, '1.2.3-beta.4');
+  assert.equal(recovery.original_release_infrastructure_sha, infraSha);
+
+  for (const overrides of [
+    { sourceRunId: '124' },
+    { channel: 'stable' },
+    { platform: 'windows-x64' },
+  ]) {
+    assert.throws(() => validatePlatformArtifactRecovery({
+      candidate,
+      verification: macVerification(candidate),
+      sourceRunId: '123',
+      candidateArtifactId: '456',
+      verificationArtifactId: '789',
+      toolkitSha: 'c'.repeat(40),
+      channel: 'beta',
+      platform: 'macos-arm64',
+      ...overrides,
+    }), /does not match|requested source run/u);
+  }
+});
+
+test('uses only ossutil 2.3.0 put-object flags and keeps post-write MD5 proof', () => {
+  const args = buildOssPutObjectArgs({
+    ALIYUN_OSS_ACCESS_KEY_ID: 'id',
+    ALIYUN_OSS_ACCESS_KEY_SECRET: 'secret',
+    ALIYUN_OSS_ENDPOINT: 'https://oss-cn-beijing.aliyuncs.com',
+    ALIYUN_OSS_REGION: 'cn-beijing',
+    ALIYUN_OSS_BUCKET: 'bucket',
+  }, {
+    filePath: '/tmp/candidate.dmg',
+    content_type: 'application/x-apple-diskimage',
+    sha256: sha('7'),
+  }, 'releases/v1.2.3/candidate.dmg');
+
+  assert.deepEqual(args.slice(0, 2), ['api', 'put-object']);
+  assert.equal(args.includes('--content-md5'), false);
+  for (const flag of [
+    '--bucket', '--key', '--body', '--content-type', '--cache-control',
+    '--metadata', '--forbid-overwrite',
+  ]) {
+    assert.equal(args.includes(flag), true, `missing OSS upload flag: ${flag}`);
+  }
 });
 
 test('restores a manual Actions entry without weakening immutable source identity', () => {

@@ -81,7 +81,6 @@ export function validateAssetDirectory(candidateEnvelope, assetRoot) {
       ...asset,
       filePath,
       md5Hex: hashFile(filePath, 'md5'),
-      md5Base64: hashFile(filePath, 'md5', 'base64'),
       sha256Base64: hashFile(filePath, 'sha256', 'base64'),
     };
   });
@@ -209,6 +208,24 @@ function ossHead(binary, env, objectKey) {
   return result.status === 0 ? parseJsonResult(result, 'OSS head-object') : null;
 }
 
+export function buildOssPutObjectArgs(env, asset, objectKey) {
+  // ossutil 2.3.0 exposes no --content-md5 flag for `api put-object` even
+  // though Content-MD5 exists in the REST API. End-state integrity remains
+  // independently proven below by size, immutable SHA-256 metadata, and the
+  // PutObject ETag matching the local MD5 before the public transport probes.
+  return [
+    'api', 'put-object',
+    '--bucket', env.ALIYUN_OSS_BUCKET,
+    '--key', objectKey,
+    '--body', `file://${asset.filePath}`,
+    '--content-type', asset.content_type,
+    '--cache-control', 'public, max-age=31536000, immutable',
+    '--metadata', `sha256=${asset.sha256}`,
+    '--forbid-overwrite', 'true',
+    ...ossArgs(env),
+  ];
+}
+
 function headerValue(payload, name) {
   const headers = payload?.Header || {};
   const key = Object.keys(headers).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
@@ -218,18 +235,9 @@ function headerValue(payload, name) {
 function mirrorToOss(binary, env, asset, objectKey) {
   let head = ossHead(binary, env, objectKey);
   if (!head) {
-    const upload = run(binary, [
-      'api', 'put-object',
-      '--bucket', env.ALIYUN_OSS_BUCKET,
-      '--key', objectKey,
-      '--body', `file://${asset.filePath}`,
-      '--content-type', asset.content_type,
-      '--content-md5', asset.md5Base64,
-      '--cache-control', 'public, max-age=31536000, immutable',
-      '--metadata', `sha256=${asset.sha256}`,
-      '--forbid-overwrite', 'true',
-      ...ossArgs(env),
-    ], { allowFailure: true });
+    const upload = run(binary, buildOssPutObjectArgs(env, asset, objectKey), {
+      allowFailure: true,
+    });
     if (upload.status !== 0) {
       head = ossHead(binary, env, objectKey);
       if (!head) throw new Error(`OSS create-only upload failed for ${asset.name}: ${upload.stderr}`);
