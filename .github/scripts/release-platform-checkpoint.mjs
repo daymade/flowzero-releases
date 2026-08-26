@@ -24,6 +24,14 @@ export const PLATFORM_ROLES = Object.freeze({
     'windows_releases',
   ]),
 });
+export const VERIFICATION_CONTRACTS = Object.freeze({
+  macos_voice_context_v1: Object.freeze(['macos-voice-context']),
+  macos_voice_context_v2: Object.freeze([
+    'macos-voice-context',
+    'macos-live-stepfun-timeline',
+  ]),
+  windows_installer_v1: Object.freeze(['windows-installer']),
+});
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -33,12 +41,47 @@ function hashEnvelope(value) {
   return `sha256:${createHash('sha256').update(canonicalJson(value)).digest('hex')}`;
 }
 
+function resolveRequiredVerificationSuites(candidate) {
+  const declared = candidate.verification_contract;
+  if (candidate.platform === 'macos-arm64' && declared === undefined) {
+    return VERIFICATION_CONTRACTS.macos_voice_context_v1;
+  }
+  if (candidate.platform === 'windows-x64' && declared === undefined) {
+    return VERIFICATION_CONTRACTS.windows_installer_v1;
+  }
+  const suites = VERIFICATION_CONTRACTS[declared];
+  assert(Array.isArray(suites), 'candidate verification contract is unsupported');
+  if (candidate.platform === 'macos-arm64') {
+    assert(declared.startsWith('macos_'), 'candidate verification contract does not match macOS');
+  } else {
+    assert(declared === 'windows_installer_v1', 'candidate verification contract does not match Windows');
+  }
+  return suites;
+}
+
+function assertNoTranscriptBearingKeys(value) {
+  const forbidden = new Set(['text', 'raw_text', 'content', 'renderedTexts', 'expectedTexts']);
+  const visit = current => {
+    if (!current || typeof current !== 'object') return;
+    if (Array.isArray(current)) {
+      for (const item of current) visit(item);
+      return;
+    }
+    for (const [key, nested] of Object.entries(current)) {
+      assert(!forbidden.has(key), `live StepFun verification contains transcript-bearing key: ${key}`);
+      visit(nested);
+    }
+  };
+  visit(value);
+}
+
 export function validateCandidateEnvelope(envelope) {
   assert(envelope?.schema === CANDIDATE_SCHEMA, 'candidate schema is unsupported');
   assert(/^sha256:[a-f0-9]{64}$/.test(envelope.candidate_id || ''), 'candidate id is invalid');
   const candidate = envelope.candidate;
   assert(candidate && typeof candidate === 'object' && !Array.isArray(candidate), 'candidate payload is missing');
   assert(Object.hasOwn(PLATFORM_ROLES, candidate.platform), 'candidate platform is unsupported');
+  resolveRequiredVerificationSuites(candidate);
   assert(/^sha256:[a-f0-9]{64}$/.test(candidate.transaction_id || ''), 'candidate transaction id is invalid');
   assert(candidate.source?.repository === 'daymade/flowzero', 'candidate source repository is invalid');
   assert(/^[a-f0-9]{40}$/.test(candidate.source?.head_sha || ''), 'candidate source SHA is invalid');
@@ -117,41 +160,69 @@ export function validateVerificationReceipt(receipt, candidateEnvelope) {
   assert(matchingSubjects.length === 1, 'verification subject is not one exact candidate asset');
   const subject = matchingSubjects[0];
   assert(!Number.isNaN(Date.parse(receipt.verified_at)), 'verification receipt timestamp is invalid');
-  const requiredSuite = candidate.platform === 'macos-arm64'
-    ? 'macos-voice-context'
-    : 'windows-installer';
-  assert(receipt.suite === requiredSuite, `platform verification requires ${requiredSuite}`);
+  const requiredSuites = resolveRequiredVerificationSuites(candidate);
+  assert(requiredSuites.includes(receipt.suite), `platform verification does not allow ${receipt.suite}`);
   if (candidate.platform === 'macos-arm64') {
     assert(subject.role === 'macos_dmg', 'macOS verification subject must be the final DMG');
     const structure = receipt.evidence?.find(
       (entry) => entry.kind === 'macos_structure' && entry.status === 'pass',
     );
     assert(structure, 'macOS verification is missing packaged structure evidence');
-    const runtime = receipt.evidence?.find(
-      (entry) => entry.kind === 'packaged_pyannote_mps'
-        && entry.status === 'pass'
-        && String(entry.device || '').toLowerCase() === 'mps'
-        && entry.cpu_inference_allowed === false,
-    );
-    assert(runtime, 'macOS verification is missing packaged pyannote MPS evidence');
-    const business = receipt.evidence?.find(
-      (entry) => entry.kind === 'packaged_local_multi_speaker_context' && entry.status === 'pass',
-    );
-    assert(business, 'macOS verification is missing the local multi-speaker business outcome');
-    assert(
-      business.speaker_count >= 2
-      && business.history_turn_count >= 2
-      && business.history_written === true
-      && business.memory_written === true
-      && business.fts_searchable === true
-      && business.zero_process_residue === true,
-      'macOS voice-context evidence is incomplete',
-    );
-    assert(
-      business.ambient_user_python_required === false
-      && business.ambient_huggingface_token_required === false,
-      'macOS business verification depended on ambient runtime state',
-    );
+    if (receipt.suite === 'macos-voice-context') {
+      const runtime = receipt.evidence?.find(
+        (entry) => entry.kind === 'packaged_pyannote_mps'
+          && entry.status === 'pass'
+          && String(entry.device || '').toLowerCase() === 'mps'
+          && entry.cpu_inference_allowed === false,
+      );
+      assert(runtime, 'macOS verification is missing packaged pyannote MPS evidence');
+      const business = receipt.evidence?.find(
+        (entry) => entry.kind === 'packaged_local_multi_speaker_context' && entry.status === 'pass',
+      );
+      assert(business, 'macOS verification is missing the local multi-speaker business outcome');
+      assert(
+        business.speaker_count >= 2
+        && business.history_turn_count >= 2
+        && business.history_written === true
+        && business.memory_written === true
+        && business.fts_searchable === true
+        && business.zero_process_residue === true,
+        'macOS voice-context evidence is incomplete',
+      );
+      assert(
+        business.ambient_user_python_required === false
+        && business.ambient_huggingface_token_required === false,
+        'macOS business verification depended on ambient runtime state',
+      );
+    } else {
+      assertNoTranscriptBearingKeys(receipt);
+      const live = receipt.evidence?.find(
+        entry => entry.kind === 'packaged_live_stepfun_timeline' && entry.status === 'pass',
+      );
+      assert(live, 'macOS verification is missing live StepFun timeline evidence');
+      assert(
+        live.provider === 'stepfun'
+        && live.model === 'stepaudio-2.5-asr'
+        && live.transport === 'https_sse'
+        && live.http_status === 200
+        && live.request_id_present === true
+        && live.timeline_origin === 'stepfun_timestamped_delta'
+        && live.timeline_segment_count >= 1
+        && live.timeline_duration_ms > 0
+        && live.transcription_source === 'live_provider'
+        && live.mock_inputs_present === false
+        && live.runtime === 'pyannote_community1_mps'
+        && String(live.device || '').toLowerCase() === 'mps'
+        && live.cpu_inference_allowed === false
+        && live.speaker_count >= 2
+        && live.history_turn_count >= 2
+        && live.history_written === true
+        && live.memory_written === true
+        && live.fts_searchable === true
+        && live.zero_process_residue === true,
+        'macOS live StepFun timeline evidence is incomplete',
+      );
+    }
   } else {
     assert(subject.role === 'windows_setup', 'Windows verification subject must be the signed Setup executable');
     const signature = receipt.evidence?.find(
@@ -166,6 +237,22 @@ export function validateVerificationReceipt(receipt, candidateEnvelope) {
     assert(installer, 'Windows verification is missing installer smoke evidence');
   }
   return JSON.parse(JSON.stringify(receipt));
+}
+
+export function validateVerificationSet(verifications, candidateEnvelope) {
+  const requiredSuites = resolveRequiredVerificationSuites(candidateEnvelope.candidate);
+  assert(
+    verifications.length === requiredSuites.length,
+    `platform_verified checkpoint requires ${requiredSuites.length} release verification receipt(s)`,
+  );
+  const validated = verifications.map(receipt => validateVerificationReceipt(receipt, candidateEnvelope));
+  const suites = validated.map(receipt => receipt.suite);
+  assert(new Set(suites).size === suites.length, 'platform verification suites are duplicated');
+  assert(
+    requiredSuites.every(suite => suites.includes(suite)),
+    'platform verification suite set is incomplete',
+  );
+  return validated;
 }
 
 export function validateMirrorReceipt(receipt, candidateEnvelope) {
@@ -238,8 +325,7 @@ export function buildPlatformCheckpoint({
   let validatedVerifications = [];
   let validatedMirrorReceipt = null;
   if (phase !== 'build_created') {
-    assert(verifications.length === 1, 'platform_verified checkpoint requires one release verification receipt');
-    validatedVerifications = [validateVerificationReceipt(verifications[0], candidate)];
+    validatedVerifications = validateVerificationSet(verifications, candidate);
   } else {
     assert(verifications.length === 0, 'build_created checkpoint cannot contain verification receipts');
   }

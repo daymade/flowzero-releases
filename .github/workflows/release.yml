@@ -423,12 +423,24 @@ jobs:
           --subject-file "$RUNNER_TEMP/mac-final/artifacts/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
           --output "$RUNNER_TEMP/mac-verification/verification.json"
 
+      - name: Prove live StepFun timestamps reach packaged pyannote
+        run: >-
+          pnpm run release:verify:ci --
+          --suite macos-live-stepfun-timeline
+          --version "${{ needs.prepare.outputs.version }}"
+          --head-sha "${{ needs.prepare.outputs.head_sha }}"
+          --app-path "apps/desktop/out/release-acceptance/Flowzero.app"
+          --subject-file "$RUNNER_TEMP/mac-final/artifacts/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
+          --output "$RUNNER_TEMP/mac-verification/live-stepfun-timeline.json"
+        env:
+          FLOWZERO_VERIFY_STEPFUN_API_KEY: ${{ secrets.FLOWZERO_STEPFUN_API_KEY }}
+
       - name: Upload Mac business acceptance receipt
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: macos-verification-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/mac-verification/verification.json
+          path: ${{ runner.temp }}/mac-verification
           if-no-files-found: error
           retention-days: 30
 
@@ -624,6 +636,7 @@ jobs:
           --candidate "$RUNNER_TEMP/mac-final/evidence/candidate.json"
           --parent "$RUNNER_TEMP/mac-state/build-created.json"
           --verification "$RUNNER_TEMP/mac-verification/verification.json"
+          --verification "$RUNNER_TEMP/mac-verification/live-stepfun-timeline.json"
           --output "$RUNNER_TEMP/mac-state/platform-verified.json"
 
       - name: Reject a Mac downgrade before immutable mirror writes
@@ -666,6 +679,7 @@ jobs:
           --candidate "$RUNNER_TEMP/mac-final/evidence/candidate.json"
           --parent "$RUNNER_TEMP/mac-state/platform-verified.json"
           --verification "$RUNNER_TEMP/mac-verification/verification.json"
+          --verification "$RUNNER_TEMP/mac-verification/live-stepfun-timeline.json"
           --mirror-receipt "$RUNNER_TEMP/mac-state/mirror-receipt.json"
           --output "$RUNNER_TEMP/mac-state/mirrored.json"
 

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   validateCandidateEnvelope,
-  validateVerificationReceipt,
+  validateVerificationSet,
 } from './release-platform-checkpoint.mjs';
 
 export const RECOVERY_INPUT_SCHEMA = 'flowzero.release_platform_artifact_recovery.v1';
@@ -16,7 +16,7 @@ function assert(condition, message) {
 
 export function validatePlatformArtifactRecovery({
   candidate: rawCandidate,
-  verification: rawVerification,
+  verifications: rawVerifications,
   sourceRunId,
   candidateArtifactId,
   verificationArtifactId,
@@ -32,7 +32,7 @@ export function validatePlatformArtifactRecovery({
   assert(['macos-arm64', 'windows-x64'].includes(platform), 'recovery platform is invalid');
 
   const candidate = validateCandidateEnvelope(rawCandidate);
-  validateVerificationReceipt(rawVerification, candidate);
+  const verifications = validateVerificationSet(rawVerifications, candidate);
   assert(
     String(candidate.candidate.attempt.workflow_run_id) === String(sourceRunId),
     'candidate was not produced by the requested source run',
@@ -45,6 +45,7 @@ export function validatePlatformArtifactRecovery({
     source_run_id: String(sourceRunId),
     candidate_artifact_id: String(candidateArtifactId),
     verification_artifact_id: String(verificationArtifactId),
+    verification_suites: verifications.map(receipt => receipt.suite),
     recovery_toolkit_sha: toolkitSha,
     original_release_infrastructure_sha:
       candidate.candidate.attempt.release_infrastructure_sha,
@@ -59,7 +60,7 @@ export function validatePlatformArtifactRecovery({
 }
 
 function parseArguments(argv) {
-  const values = {};
+  const values = { '--verification': [] };
   const allowed = new Set([
     '--candidate',
     '--verification',
@@ -74,13 +75,16 @@ function parseArguments(argv) {
   for (let index = 0; index < argv.length; index += 2) {
     const key = argv[index];
     const value = argv[index + 1];
-    if (!allowed.has(key) || !value || values[key]) {
+    if (!allowed.has(key) || !value || (key !== '--verification' && values[key])) {
       throw new Error(`invalid argument: ${key || '<empty>'}`);
     }
-    values[key] = value;
+    if (key === '--verification') values[key].push(value);
+    else values[key] = value;
   }
   for (const key of allowed) {
-    if (!values[key]) throw new Error(`missing argument: ${key}`);
+    if (!values[key] || (Array.isArray(values[key]) && values[key].length === 0)) {
+      throw new Error(`missing argument: ${key}`);
+    }
   }
   return values;
 }
@@ -99,12 +103,12 @@ async function atomicWriteJson(output, value) {
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArguments(argv);
   const candidate = JSON.parse(await readFile(path.resolve(args['--candidate']), 'utf8'));
-  const verification = JSON.parse(
-    await readFile(path.resolve(args['--verification']), 'utf8'),
-  );
+  const verifications = await Promise.all(args['--verification'].map(async verificationPath => (
+    JSON.parse(await readFile(path.resolve(verificationPath), 'utf8'))
+  )));
   const recovery = validatePlatformArtifactRecovery({
     candidate,
-    verification,
+    verifications,
     sourceRunId: args['--source-run-id'],
     candidateArtifactId: args['--candidate-artifact-id'],
     verificationArtifactId: args['--verification-artifact-id'],

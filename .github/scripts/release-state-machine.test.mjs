@@ -50,10 +50,11 @@ function intent(overrides = {}) {
   return { ...identity, transaction_id: contentId(identity) };
 }
 
-function macCandidate(releaseIntent) {
+function macCandidate(releaseIntent, { verificationContract } = {}) {
   const candidate = {
     transaction_id: releaseIntent.transaction_id,
     platform: 'macos-arm64',
+    ...(verificationContract ? { verification_contract: verificationContract } : {}),
     source: releaseIntent.source,
     release: releaseIntent.release,
     attempt: {
@@ -134,6 +135,46 @@ function macVerification(candidate) {
         zero_process_residue: true,
         ambient_user_python_required: false,
         ambient_huggingface_token_required: false,
+      },
+    ],
+    verified_at: '2026-08-26T00:00:00Z',
+  };
+}
+
+function macLiveVerification(candidate, overrides = {}) {
+  return {
+    schema: 'flowzero.release_verification.v1',
+    status: 'pass',
+    suite: 'macos-live-stepfun-timeline',
+    version: candidate.candidate.release.version,
+    source_head_sha: candidate.candidate.source.head_sha,
+    platform: 'macos-arm64',
+    subject: { name: 'Flowzero.dmg', size: 300, sha256: sha('1') },
+    evidence: [
+      { kind: 'macos_structure', status: 'pass' },
+      {
+        kind: 'packaged_live_stepfun_timeline',
+        status: 'pass',
+        provider: 'stepfun',
+        model: 'stepaudio-2.5-asr',
+        transport: 'https_sse',
+        http_status: 200,
+        request_id_present: true,
+        timeline_origin: 'stepfun_timestamped_delta',
+        timeline_segment_count: 3,
+        timeline_duration_ms: 15534,
+        transcription_source: 'live_provider',
+        mock_inputs_present: false,
+        runtime: 'pyannote_community1_mps',
+        device: 'mps',
+        cpu_inference_allowed: false,
+        speaker_count: 2,
+        history_turn_count: 2,
+        history_written: true,
+        memory_written: true,
+        fts_searchable: true,
+        zero_process_residue: true,
+        ...overrides,
       },
     ],
     verified_at: '2026-08-26T00:00:00Z',
@@ -268,7 +309,7 @@ test('binds mirror recovery to one accepted artifact pair and the requested sour
   const candidate = macCandidate(intent());
   const recovery = validatePlatformArtifactRecovery({
     candidate,
-    verification: macVerification(candidate),
+    verifications: [macVerification(candidate)],
     sourceRunId: '123',
     candidateArtifactId: '456',
     verificationArtifactId: '789',
@@ -280,6 +321,34 @@ test('binds mirror recovery to one accepted artifact pair and the requested sour
   assert.equal(recovery.version, '1.2.3-beta.4');
   assert.equal(recovery.original_release_infrastructure_sha, infraSha);
 
+  const v2Candidate = macCandidate(intent(), {
+    verificationContract: 'macos_voice_context_v2'
+  });
+  const v2Recovery = validatePlatformArtifactRecovery({
+    candidate: v2Candidate,
+    verifications: [macVerification(v2Candidate), macLiveVerification(v2Candidate)],
+    sourceRunId: '123',
+    candidateArtifactId: '456',
+    verificationArtifactId: '789',
+    toolkitSha: 'c'.repeat(40),
+    channel: 'beta',
+    platform: 'macos-arm64',
+  });
+  assert.deepEqual(v2Recovery.verification_suites, [
+    'macos-voice-context',
+    'macos-live-stepfun-timeline',
+  ]);
+  assert.throws(() => validatePlatformArtifactRecovery({
+    candidate: v2Candidate,
+    verifications: [macVerification(v2Candidate)],
+    sourceRunId: '123',
+    candidateArtifactId: '456',
+    verificationArtifactId: '789',
+    toolkitSha: 'c'.repeat(40),
+    channel: 'beta',
+    platform: 'macos-arm64',
+  }), /requires 2 release verification/u);
+
   for (const overrides of [
     { sourceRunId: '124' },
     { channel: 'stable' },
@@ -287,7 +356,7 @@ test('binds mirror recovery to one accepted artifact pair and the requested sour
   ]) {
     assert.throws(() => validatePlatformArtifactRecovery({
       candidate,
-      verification: macVerification(candidate),
+      verifications: [macVerification(candidate)],
       sourceRunId: '123',
       candidateArtifactId: '456',
       verificationArtifactId: '789',
@@ -475,6 +544,62 @@ test('advances macOS independently through build, business verification, mirror,
   assert.equal(manifest.variant, 'standard');
   assert.equal(manifest.checkpoint_id, mirrored.checkpoint_id);
   assert.equal(manifest.assets.length, 3);
+});
+
+test('macOS v2 requires distinct fixture and live StepFun verification receipts', () => {
+  const candidate = macCandidate(intent(), { verificationContract: 'macos_voice_context_v2' });
+  const built = buildPlatformCheckpoint({ phase: 'build_created', candidate });
+  const fixture = macVerification(candidate);
+  const live = macLiveVerification(candidate);
+
+  assert.doesNotThrow(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate,
+    parent: built,
+    verifications: [fixture, live],
+  }));
+  assert.throws(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate,
+    parent: built,
+    verifications: [fixture],
+  }), /requires 2 release verification/u);
+  assert.throws(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate,
+    parent: built,
+    verifications: [live],
+  }), /requires 2 release verification/u);
+  assert.throws(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate,
+    parent: built,
+    verifications: [fixture, fixture],
+  }), /duplicated/u);
+
+  for (const overrides of [
+    { mock_inputs_present: true },
+    { timeline_origin: 'fixture' },
+    { provider: 'doubao' },
+    { timeline_segment_count: 0 },
+    { cpu_inference_allowed: true },
+  ]) {
+    assert.throws(() => buildPlatformCheckpoint({
+      phase: 'platform_verified',
+      candidate,
+      parent: built,
+      verifications: [fixture, macLiveVerification(candidate, overrides)],
+    }), /live StepFun timeline evidence is incomplete/u);
+  }
+
+  const transcriptLeak = macLiveVerification(candidate);
+  transcriptLeak.evidence[1].text = 'must not be public';
+  assert.throws(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate,
+    parent: built,
+    verifications: [fixture, transcriptLeak],
+  }), /transcript-bearing key/u);
 });
 
 test('validates the exact Windows Squirrel candidate and timestamped installer receipt', () => {

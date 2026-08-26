@@ -95,9 +95,22 @@ jobs:
         id: identity
         shell: bash
         run: |
+          verification_contract="$(node -e '
+            const fs = require("node:fs");
+            const value = JSON.parse(fs.readFileSync(process.env.CANDIDATE_PATH));
+            process.stdout.write(value.candidate.verification_contract || "legacy_v1");
+          ')"
+          verification_args=(
+            --verification "$RUNNER_TEMP/platform-verification/verification.json"
+          )
+          if [[ "$verification_contract" == "macos_voice_context_v2" ]]; then
+            verification_args+=(
+              --verification "$RUNNER_TEMP/platform-verification/live-stepfun-timeline.json"
+            )
+          fi
           node .github/scripts/validate-platform-artifact-recovery.mjs \
             --candidate "$RUNNER_TEMP/platform-final/evidence/candidate.json" \
-            --verification "$RUNNER_TEMP/platform-verification/verification.json" \
+            "${verification_args[@]}" \
             --source-run-id "${{ inputs.source_run_id }}" \
             --candidate-artifact-id "${{ inputs.candidate_artifact_id }}" \
             --verification-artifact-id "${{ inputs.verification_artifact_id }}" \
@@ -114,6 +127,7 @@ jobs:
             );
           '
         env:
+          CANDIDATE_PATH: ${{ runner.temp }}/platform-final/evidence/candidate.json
           RECOVERY_INPUT: ${{ runner.temp }}/state/recovery-input.json
 
       - name: Recreate exact build checkpoint
@@ -124,13 +138,28 @@ jobs:
           --output "$RUNNER_TEMP/state/build-created.json"
 
       - name: Recreate accepted platform checkpoint
-        run: >-
-          node .github/scripts/release-platform-checkpoint.mjs
-          --phase platform_verified
-          --candidate "$RUNNER_TEMP/platform-final/evidence/candidate.json"
-          --parent "$RUNNER_TEMP/state/build-created.json"
-          --verification "$RUNNER_TEMP/platform-verification/verification.json"
-          --output "$RUNNER_TEMP/state/platform-verified.json"
+        shell: bash
+        run: |
+          verification_args=(
+            --verification "$RUNNER_TEMP/platform-verification/verification.json"
+          )
+          if node -e '
+            const fs = require("node:fs");
+            const value = JSON.parse(fs.readFileSync(process.env.CANDIDATE_PATH));
+            process.exit(value.candidate.verification_contract === "macos_voice_context_v2" ? 0 : 1);
+          '; then
+            verification_args+=(
+              --verification "$RUNNER_TEMP/platform-verification/live-stepfun-timeline.json"
+            )
+          fi
+          node .github/scripts/release-platform-checkpoint.mjs \
+            --phase platform_verified \
+            --candidate "$RUNNER_TEMP/platform-final/evidence/candidate.json" \
+            --parent "$RUNNER_TEMP/state/build-created.json" \
+            "${verification_args[@]}" \
+            --output "$RUNNER_TEMP/state/platform-verified.json"
+        env:
+          CANDIDATE_PATH: ${{ runner.temp }}/platform-final/evidence/candidate.json
 
       - name: Reject an unapproved downgrade before immutable mirror writes
         run: >-
@@ -166,14 +195,29 @@ jobs:
           ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
 
       - name: Freeze recovered mirrored checkpoint
-        run: >-
-          node .github/scripts/release-platform-checkpoint.mjs
-          --phase mirrored
-          --candidate "$RUNNER_TEMP/platform-final/evidence/candidate.json"
-          --parent "$RUNNER_TEMP/state/platform-verified.json"
-          --verification "$RUNNER_TEMP/platform-verification/verification.json"
-          --mirror-receipt "$RUNNER_TEMP/state/mirror-receipt.json"
-          --output "$RUNNER_TEMP/state/mirrored.json"
+        shell: bash
+        run: |
+          verification_args=(
+            --verification "$RUNNER_TEMP/platform-verification/verification.json"
+          )
+          if node -e '
+            const fs = require("node:fs");
+            const value = JSON.parse(fs.readFileSync(process.env.CANDIDATE_PATH));
+            process.exit(value.candidate.verification_contract === "macos_voice_context_v2" ? 0 : 1);
+          '; then
+            verification_args+=(
+              --verification "$RUNNER_TEMP/platform-verification/live-stepfun-timeline.json"
+            )
+          fi
+          node .github/scripts/release-platform-checkpoint.mjs \
+            --phase mirrored \
+            --candidate "$RUNNER_TEMP/platform-final/evidence/candidate.json" \
+            --parent "$RUNNER_TEMP/state/platform-verified.json" \
+            "${verification_args[@]}" \
+            --mirror-receipt "$RUNNER_TEMP/state/mirror-receipt.json" \
+            --output "$RUNNER_TEMP/state/mirrored.json"
+        env:
+          CANDIDATE_PATH: ${{ runner.temp }}/platform-final/evidence/candidate.json
 
       - name: Generate recovered platform manifest
         run: >-

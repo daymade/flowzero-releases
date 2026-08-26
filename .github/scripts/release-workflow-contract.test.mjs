@@ -108,7 +108,21 @@ test('the release-blocking Mac verifier is the packaged local multi-speaker busi
   const mirror = jobBlock('mirror-macos');
   assert.match(acceptance, /build-meeting-e2e-fixtures\.cjs/u);
   assert.match(acceptance, /--suite macos-voice-context/u);
+  assert.match(acceptance, /--suite macos-live-stepfun-timeline/u);
+  assert.match(
+    acceptance,
+    /FLOWZERO_VERIFY_STEPFUN_API_KEY: \$\{\{ secrets\.FLOWZERO_STEPFUN_API_KEY \}\}/u,
+  );
+  assert.match(acceptance, /live-stepfun-timeline\.json/u);
   assert.match(acceptance, /--subject-file[\s\S]*\.dmg/u);
+  assert.equal(
+    (mirror.match(/--verification "\$RUNNER_TEMP\/mac-verification\//gu) || []).length,
+    4,
+  );
+  assert.equal(
+    (mirror.match(/live-stepfun-timeline\.json/gu) || []).length,
+    2,
+  );
   assert.match(mirror, /needs: \[prepare, finalize-macos, accept-macos\]/u);
   assert.doesNotMatch(workflow, /--suite macos-agent-runtime/u);
 });
@@ -163,6 +177,8 @@ test('a failed mirror resumes from exact accepted artifacts without rebuilding',
   assert.equal((resumeMirrorWorkflow.match(/run-id: \$\{\{ inputs\.source_run_id \}\}/gu) || []).length, 2);
   assert.equal((resumeMirrorWorkflow.match(/github-token: \$\{\{ github\.token \}\}/gu) || []).length, 2);
   assert.match(resumeMirrorWorkflow, /validate-platform-artifact-recovery\.mjs/u);
+  assert.match(resumeMirrorWorkflow, /macos_voice_context_v2/u);
+  assert.match(resumeMirrorWorkflow, /live-stepfun-timeline\.json/u);
   assert.match(resumeMirrorWorkflow, /--phase build_created/u);
   assert.match(resumeMirrorWorkflow, /--phase platform_verified/u);
   assert.match(resumeMirrorWorkflow, /uses: \.\/\.github\/actions\/mirror-release-assets/u);
