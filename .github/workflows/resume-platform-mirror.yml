@@ -4,8 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: Release run containing the final candidate and verification artifacts
+        description: Release run containing the final candidate artifact
         required: true
+        type: string
+      verification_run_id:
+        description: Run containing the verification artifact; defaults to source_run_id
+        required: false
         type: string
       candidate_artifact_id:
         description: Exact final platform candidate artifact ID
@@ -50,10 +54,11 @@ jobs:
     steps:
       - name: Validate exact recovery identifiers
         run: >-
-          node -e "if(process.env.GITHUB_REF!=='refs/heads/main'||!/^[a-f0-9]{40}$/.test(process.env.TOOLKIT_SHA)||!/^\d+$/.test(process.env.SOURCE_RUN_ID)||!/^\d+$/.test(process.env.CANDIDATE_ARTIFACT_ID)||!/^\d+$/.test(process.env.VERIFICATION_ARTIFACT_ID))throw new Error('invalid mirror recovery identity')"
+          node -e "if(process.env.GITHUB_REF!=='refs/heads/main'||!/^[a-f0-9]{40}$/.test(process.env.TOOLKIT_SHA)||!/^\d+$/.test(process.env.SOURCE_RUN_ID)||!/^\d+$/.test(process.env.VERIFICATION_RUN_ID)||!/^\d+$/.test(process.env.CANDIDATE_ARTIFACT_ID)||!/^\d+$/.test(process.env.VERIFICATION_ARTIFACT_ID))throw new Error('invalid mirror recovery identity')"
         env:
           TOOLKIT_SHA: ${{ inputs.toolkit_sha }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          VERIFICATION_RUN_ID: ${{ inputs.verification_run_id || inputs.source_run_id }}
           CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
           VERIFICATION_ARTIFACT_ID: ${{ inputs.verification_artifact_id }}
 
@@ -76,6 +81,26 @@ jobs:
           ref: ${{ inputs.toolkit_sha }}
           persist-credentials: false
 
+      - name: Verify Actions artifact and workflow provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/${{ inputs.candidate_artifact_id }}" > "$RUNNER_TEMP/candidate-artifact.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/${{ inputs.verification_artifact_id }}" > "$RUNNER_TEMP/verification-artifact.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/${{ inputs.verification_run_id || inputs.source_run_id }}" > "$RUNNER_TEMP/verification-run.json"
+          node .github/scripts/verify-actions-artifact-provenance.mjs \
+            --candidate-artifact "$RUNNER_TEMP/candidate-artifact.json" \
+            --verification-artifact "$RUNNER_TEMP/verification-artifact.json" \
+            --verification-run "$RUNNER_TEMP/verification-run.json" \
+            --source-run-id "${{ inputs.source_run_id }}" \
+            --verification-run-id "${{ inputs.verification_run_id || inputs.source_run_id }}" \
+            --candidate-artifact-id "${{ inputs.candidate_artifact_id }}" \
+            --verification-artifact-id "${{ inputs.verification_artifact_id }}" \
+            --toolkit-sha "${{ inputs.toolkit_sha }}" \
+            --output "$RUNNER_TEMP/state/actions-provenance.json"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Download exact final platform candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -88,7 +113,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           artifact-ids: ${{ inputs.verification_artifact_id }}
-          run-id: ${{ inputs.source_run_id }}
+          run-id: ${{ inputs.verification_run_id || inputs.source_run_id }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/platform-verification
 
@@ -113,6 +138,8 @@ jobs:
             --candidate "$RUNNER_TEMP/platform-final/evidence/candidate.json" \
             "${verification_args[@]}" \
             --source-run-id "${{ inputs.source_run_id }}" \
+            --verification-run-id "${{ inputs.verification_run_id || inputs.source_run_id }}" \
+            --actions-provenance "$RUNNER_TEMP/state/actions-provenance.json" \
             --candidate-artifact-id "${{ inputs.candidate_artifact_id }}" \
             --verification-artifact-id "${{ inputs.verification_artifact_id }}" \
             --toolkit-sha "${{ inputs.toolkit_sha }}" \
