@@ -49,14 +49,27 @@ jobs:
     steps:
       - name: Validate exact recovery identifiers
         run: >-
-          node -e "if(!/^[a-f0-9]{40}$/.test(process.env.TOOLKIT_SHA)||!/^\d+$/.test(process.env.SOURCE_RUN_ID)||!/^\d+$/.test(process.env.CANDIDATE_ARTIFACT_ID)||!/^\d+$/.test(process.env.VERIFICATION_ARTIFACT_ID))throw new Error('invalid mirror recovery identity')"
+          node -e "if(process.env.GITHUB_REF!=='refs/heads/main'||!/^[a-f0-9]{40}$/.test(process.env.TOOLKIT_SHA)||!/^\d+$/.test(process.env.SOURCE_RUN_ID)||!/^\d+$/.test(process.env.CANDIDATE_ARTIFACT_ID)||!/^\d+$/.test(process.env.VERIFICATION_ARTIFACT_ID))throw new Error('invalid mirror recovery identity')"
         env:
           TOOLKIT_SHA: ${{ inputs.toolkit_sha }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
           VERIFICATION_ARTIFACT_ID: ${{ inputs.verification_artifact_id }}
 
-      - name: Checkout explicit recovery toolkit
+      - name: Checkout trusted current main history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require recovery toolkit to belong to trusted main history
+        run: >-
+          node .github/scripts/assert-recovery-toolkit-on-main.mjs
+          --toolkit-sha "${{ inputs.toolkit_sha }}"
+          --main-sha "$GITHUB_SHA"
+
+      - name: Checkout exact approved recovery toolkit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.toolkit_sha }}
@@ -190,8 +203,10 @@ jobs:
           --channel "${{ inputs.channel }}"
           --platform "${{ inputs.platform }}"
           --version "${{ steps.identity.outputs.version }}"
+          --output "$RUNNER_TEMP/state/canary-receipt.json"
 
       - name: Preserve recovered mirror, promotion, and canary state
+        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: mirror-recovery-${{ inputs.channel }}-${{ inputs.platform }}-${{ github.run_id }}

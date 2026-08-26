@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { main as initializeEmptyPlatformChannel } from './initialize-empty-platform-channel.mjs';
 import { putImmutableJson } from './promote-platform-channel.mjs';
-import { verifyChannelCanary } from './verify-channel-canary.mjs';
+import {
+  verifyChannelCanary,
+  verifyChannelCanaryWithReceipt,
+} from './verify-channel-canary.mjs';
 
 const digestHex = 'a'.repeat(64);
 const digestBase64 = Buffer.from(digestHex, 'hex').toString('base64');
@@ -62,4 +68,33 @@ test('no_release canary requires the user-facing platform route to return 204', 
     state: 'no_release',
     fetchImplementation: async () => new Response('still published', { status: 200 }),
   }), /HTTP 200/u);
+});
+
+test('canary writes a durable pass or fail receipt before returning', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'tinkle_flowzero-canary-'));
+  const passPath = path.join(root, 'pass.json');
+  await verifyChannelCanaryWithReceipt({
+    channel: 'beta',
+    platform: 'macos-arm64',
+    state: 'no_release',
+    output: passPath,
+    checkedAt: '2026-08-26T00:00:00Z',
+    fetchImplementation: async () => new Response(null, { status: 204 }),
+  });
+  const passed = JSON.parse(await readFile(passPath, 'utf8'));
+  assert.equal(passed.status, 'pass');
+  assert.equal(passed.evidence.state, 'no_release');
+
+  const failPath = path.join(root, 'fail.json');
+  await assert.rejects(verifyChannelCanaryWithReceipt({
+    channel: 'beta',
+    platform: 'windows-x64',
+    state: 'no_release',
+    output: failPath,
+    checkedAt: '2026-08-26T00:00:01Z',
+    fetchImplementation: async () => new Response('still published', { status: 200 }),
+  }), /HTTP 200/u);
+  const failed = JSON.parse(await readFile(failPath, 'utf8'));
+  assert.equal(failed.status, 'fail');
+  assert.match(failed.error, /HTTP 200/u);
 });

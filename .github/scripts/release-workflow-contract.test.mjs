@@ -150,6 +150,14 @@ test('a failed mirror resumes from exact accepted artifacts without rebuilding',
     assert.match(value, /^[^@]+@[a-f0-9]{40}$/u, `un-pinned recovery action: ${value}`);
   }
   assert.match(resumeMirrorWorkflow, /ref: \$\{\{ inputs\.toolkit_sha \}\}/u);
+  assert.match(resumeMirrorWorkflow, /process\.env\.GITHUB_REF!==['"]refs\/heads\/main['"]/u);
+  assert.match(resumeMirrorWorkflow, /ref: \$\{\{ github\.sha \}\}[\s\S]*fetch-depth: 0/u);
+  assert.match(resumeMirrorWorkflow, /assert-recovery-toolkit-on-main\.mjs/u);
+  assert.ok(
+    resumeMirrorWorkflow.indexOf('assert-recovery-toolkit-on-main.mjs')
+      < resumeMirrorWorkflow.indexOf('Checkout exact approved recovery toolkit'),
+    'untrusted recovery toolkit can execute before main-ancestry verification',
+  );
   assert.match(resumeMirrorWorkflow, /artifact-ids: \$\{\{ inputs\.candidate_artifact_id \}\}/u);
   assert.match(resumeMirrorWorkflow, /artifact-ids: \$\{\{ inputs\.verification_artifact_id \}\}/u);
   assert.equal((resumeMirrorWorkflow.match(/run-id: \$\{\{ inputs\.source_run_id \}\}/gu) || []).length, 2);
@@ -161,6 +169,11 @@ test('a failed mirror resumes from exact accepted artifacts without rebuilding',
   assert.match(resumeMirrorWorkflow, /--phase mirrored/u);
   assert.match(resumeMirrorWorkflow, /uses: \.\/\.github\/actions\/promote-update-channel/u);
   assert.match(resumeMirrorWorkflow, /verify-channel-canary\.mjs/u);
+  assert.match(resumeMirrorWorkflow, /--output "\$RUNNER_TEMP\/state\/canary-receipt\.json"/u);
+  assert.match(
+    resumeMirrorWorkflow,
+    /Preserve recovered mirror, promotion, and canary state[\s\S]*if: \$\{\{ always\(\) \}\}/u,
+  );
   assert.doesNotMatch(
     resumeMirrorWorkflow,
     /pnpm install|release:build:ci|electron-forge|notarytool|release-notarize-ci/u,

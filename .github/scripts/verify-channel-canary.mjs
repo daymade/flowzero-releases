@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
+import { mkdir, rename, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+export const CANARY_RECEIPT_SCHEMA = 'flowzero.update_channel_canary_receipt.v1';
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -71,12 +75,68 @@ export async function verifyChannelCanary({
   throw new Error(`invalid platform: ${platform}`);
 }
 
+async function atomicWriteJson(output, value) {
+  const resolved = path.resolve(output);
+  await mkdir(path.dirname(resolved), { recursive: true });
+  const temporary = path.join(
+    path.dirname(resolved),
+    `tinkle_${path.basename(resolved)}.${process.pid}.tmp`,
+  );
+  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await rename(temporary, resolved);
+}
+
+export async function verifyChannelCanaryWithReceipt({
+  channel,
+  platform,
+  version,
+  state = 'published',
+  output,
+  fetchImplementation = fetch,
+  checkedAt = new Date().toISOString(),
+}) {
+  assert(typeof output === 'string' && output.trim(), 'canary receipt output is required');
+  assert(!Number.isNaN(Date.parse(checkedAt)), 'canary receipt timestamp is invalid');
+  try {
+    const evidence = await verifyChannelCanary({
+      channel,
+      platform,
+      version,
+      state,
+      fetchImplementation,
+    });
+    await atomicWriteJson(output, {
+      schema: CANARY_RECEIPT_SCHEMA,
+      status: 'pass',
+      channel,
+      platform,
+      state,
+      version: version || null,
+      evidence,
+      checked_at: checkedAt,
+    });
+    return evidence;
+  } catch (error) {
+    await atomicWriteJson(output, {
+      schema: CANARY_RECEIPT_SCHEMA,
+      status: 'fail',
+      channel,
+      platform,
+      state,
+      version: version || null,
+      error: error.message,
+      checked_at: checkedAt,
+    });
+    throw error;
+  }
+}
+
 function parseArguments(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 2) {
     const key = argv[index];
     const value = argv[index + 1];
-    if (!['--channel', '--platform', '--version', '--state'].includes(key) || !value) {
+    if (!['--channel', '--platform', '--version', '--state', '--output'].includes(key) || !value) {
       throw new Error(`invalid argument: ${key || '<empty>'}`);
     }
     values[key] = value;
@@ -89,12 +149,15 @@ function parseArguments(argv) {
 
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArguments(argv);
-  const result = await verifyChannelCanary({
+  const input = {
     channel: args['--channel'],
     platform: args['--platform'],
     version: args['--version'],
     state: args['--state'],
-  });
+  };
+  const result = args['--output']
+    ? await verifyChannelCanaryWithReceipt({ ...input, output: args['--output'] })
+    : await verifyChannelCanary(input);
   process.stdout.write(`${JSON.stringify(result)}\n`);
   return result;
 }

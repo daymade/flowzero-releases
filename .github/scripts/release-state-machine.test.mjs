@@ -22,6 +22,7 @@ import {
 } from './generate-platform-channel-manifest.mjs';
 import { buildOssPutObjectArgs } from './mirror-release-assets.mjs';
 import { validatePlatformArtifactRecovery } from './validate-platform-artifact-recovery.mjs';
+import { assertRecoveryToolkitOnMain } from './assert-recovery-toolkit-on-main.mjs';
 
 const contentId = value => `sha256:${createHash('sha256').update(canonicalJson(value)).digest('hex')}`;
 const sha = character => character.repeat(64);
@@ -296,6 +297,28 @@ test('binds mirror recovery to one accepted artifact pair and the requested sour
       ...overrides,
     }), /does not match|requested source run/u);
   }
+});
+
+test('accepts only a recovery toolkit commit already contained in trusted main', () => {
+  const calls = [];
+  const accepted = assertRecoveryToolkitOnMain({
+    toolkitSha: 'c'.repeat(40),
+    mainSha: 'd'.repeat(40),
+    runGit: (args) => {
+      calls.push(args);
+      return { status: 0, stderr: '' };
+    },
+  });
+  assert.equal(accepted.toolkit_sha, 'c'.repeat(40));
+  assert.deepEqual(calls, [
+    ['cat-file', '-e', `${'c'.repeat(40)}^{commit}`],
+    ['merge-base', '--is-ancestor', 'c'.repeat(40), 'd'.repeat(40)],
+  ]);
+  assert.throws(() => assertRecoveryToolkitOnMain({
+    toolkitSha: 'c'.repeat(40),
+    mainSha: 'd'.repeat(40),
+    runGit: (args) => ({ status: args[0] === 'cat-file' ? 0 : 1, stderr: '' }),
+  }), /not an ancestor/u);
 });
 
 test('uses only ossutil 2.3.0 put-object flags and keeps post-write MD5 proof', () => {
