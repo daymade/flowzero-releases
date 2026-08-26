@@ -173,6 +173,22 @@ test('macOS draft assets are hash-bound and notarization state is checked before
   assert.ok(firstMountAfterRestore > extractStep);
 });
 
+test('Windows draft download normalizes Git Bash CRLF names and fails before smoke when assets are incomplete', async () => {
+  const workflow = await readFile(
+    new URL('../workflows/release.yml', import.meta.url),
+    'utf8',
+  );
+  const downloadScript = extractRunBlock(
+    workflow,
+    'Download Windows assets from the GitHub draft',
+  );
+  assert.match(downloadScript, /ASSET_NAME="\$\{ASSET_NAME%\$'\\r'\}"/u);
+  assert.match(downloadScript, /SETUP_FILES=\("\$VERIFY_DIR"\/\*-Setup\.exe\)/u);
+  assert.match(downloadScript, /NUPKG_FILES=\("\$VERIFY_DIR"\/\*\.nupkg\)/u);
+  assert.match(downloadScript, /\[ ! -f "\$VERIFY_DIR\/RELEASES" \]/u);
+  assert.match(downloadScript, /Expected exactly one draft Setup\.exe, full\.nupkg, and RELEASES asset/u);
+});
+
 test('publication and promotion rebind every GitHub asset to immutable R2 evidence', async () => {
   const workflow = await readFile(
     new URL('../workflows/release.yml', import.meta.url),

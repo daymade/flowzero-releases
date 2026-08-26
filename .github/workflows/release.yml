@@ -902,6 +902,7 @@ jobs:
           fi
           jq -r '.assets[] | select(.state == "uploaded") | [.id, .name] | @tsv' "$DRAFT_JSON" \
             | while IFS=$'\t' read -r ASSET_ID ASSET_NAME; do
+                ASSET_NAME="${ASSET_NAME%$'\r'}"
                 case "$ASSET_NAME" in
                   *-Setup.exe|*.nupkg|RELEASES)
                     gh api \
@@ -911,6 +912,14 @@ jobs:
                     ;;
                 esac
               done
+          shopt -s nullglob
+          SETUP_FILES=("$VERIFY_DIR"/*-Setup.exe)
+          NUPKG_FILES=("$VERIFY_DIR"/*.nupkg)
+          if [ "${#SETUP_FILES[@]}" -ne 1 ] || [ "${#NUPKG_FILES[@]}" -ne 1 ] || [ ! -f "$VERIFY_DIR/RELEASES" ]; then
+            echo "::error::Expected exactly one draft Setup.exe, full.nupkg, and RELEASES asset"
+            find "$VERIFY_DIR" -maxdepth 1 -type f -print
+            exit 1
+          fi
           echo "VERIFY_DIR=$VERIFY_DIR" >> "$GITHUB_ENV"
           ls -la "$VERIFY_DIR"
 
