@@ -13,6 +13,10 @@ on:
         description: Exact 40-character private source SHA on main
         required: true
         type: string
+      transaction_id:
+        description: Exact flowzero.release_intent.v1 transaction_id from the trigger
+        required: true
+        type: string
       platforms:
         description: Platform lanes to request
         required: true
@@ -35,8 +39,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-transaction-${{ github.event.client_payload.intent.transaction_id || github.run_id }}
+  group: release-transaction-${{ github.event.client_payload.intent.transaction_id || inputs.transaction_id }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   prepare:
@@ -53,6 +58,9 @@ jobs:
       macos_requested: ${{ steps.transaction.outputs.macos_requested }}
       windows_requested: ${{ steps.transaction.outputs.windows_requested }}
       windows_nupkg_name: ${{ steps.transaction.outputs.windows_nupkg_name }}
+      is_owner: ${{ steps.claim.outputs.is_owner }}
+      owner_run_id: ${{ steps.claim.outputs.owner_run_id }}
+      owner_object_key: ${{ steps.claim.outputs.owner_object_key }}
       transaction_artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - name: Checkout frozen release infrastructure
@@ -80,7 +88,27 @@ jobs:
       - name: Verify the frozen release infrastructure contracts
         run: node --test .github/scripts/*.test.mjs workers/release-download/test/*.test.js
 
+      - name: Atomically claim the durable release transaction owner
+        id: claim
+        run: >-
+          node .github/scripts/claim-release-transaction.mjs
+          --transaction "$RUNNER_TEMP/release-transaction.json"
+          --github-output "$GITHUB_OUTPUT"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+          RUNNER_TEMP: ${{ runner.temp }}
+
+      - name: Point duplicate ingress to its existing owner
+        if: steps.claim.outputs.is_owner != 'true'
+        run: >-
+          echo "transaction ${{ steps.transaction.outputs.transaction_id }} is already owned by run ${{ steps.claim.outputs.owner_run_id }}; this duplicate ingress is a no-op"
+          >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload immutable transaction intent
+        if: steps.claim.outputs.is_owner == 'true'
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -90,6 +118,7 @@ jobs:
           retention-days: 30
 
   qualify-source:
+    if: needs.prepare.outputs.is_owner == 'true'
     needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -150,7 +179,7 @@ jobs:
         run: pnpm run context:gate
 
   build-macos:
-    if: needs.prepare.outputs.macos_requested == 'true'
+    if: needs.prepare.outputs.is_owner == 'true' && needs.prepare.outputs.macos_requested == 'true'
     needs: [prepare, qualify-source]
     runs-on: macos-15
     timeout-minutes: 360
@@ -277,7 +306,7 @@ jobs:
           retention-days: 30
 
   finalize-macos:
-    if: needs.prepare.outputs.macos_requested == 'true'
+    if: needs.prepare.outputs.is_owner == 'true' && needs.prepare.outputs.macos_requested == 'true'
     needs: [prepare, build-macos]
     runs-on: macos-15
     timeout-minutes: 360
@@ -374,7 +403,7 @@ jobs:
           retention-days: 30
 
   accept-macos:
-    if: needs.prepare.outputs.macos_requested == 'true'
+    if: needs.prepare.outputs.is_owner == 'true' && needs.prepare.outputs.macos_requested == 'true'
     needs: [prepare, finalize-macos]
     runs-on: macos-15
     timeout-minutes: 180
@@ -445,7 +474,7 @@ jobs:
           retention-days: 30
 
   build-windows:
-    if: needs.prepare.outputs.windows_requested == 'true'
+    if: needs.prepare.outputs.is_owner == 'true' && needs.prepare.outputs.windows_requested == 'true'
     needs: [prepare, qualify-source]
     runs-on: windows-2025
     timeout-minutes: 360
@@ -539,7 +568,7 @@ jobs:
           retention-days: 30
 
   accept-windows:
-    if: needs.prepare.outputs.windows_requested == 'true'
+    if: needs.prepare.outputs.is_owner == 'true' && needs.prepare.outputs.windows_requested == 'true'
     needs: [prepare, build-windows]
     runs-on: windows-2025
     timeout-minutes: 180
@@ -595,7 +624,7 @@ jobs:
           retention-days: 30
 
   mirror-macos:
-    if: needs.prepare.outputs.macos_requested == 'true'
+    if: needs.prepare.outputs.is_owner == 'true' && needs.prepare.outputs.macos_requested == 'true'
     needs: [prepare, finalize-macos, accept-macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -699,7 +728,7 @@ jobs:
           retention-days: 30
 
   mirror-windows:
-    if: needs.prepare.outputs.windows_requested == 'true'
+    if: needs.prepare.outputs.is_owner == 'true' && needs.prepare.outputs.windows_requested == 'true'
     needs: [prepare, build-windows, accept-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -801,13 +830,14 @@ jobs:
           retention-days: 30
 
   promote-macos:
-    if: needs.prepare.outputs.macos_requested == 'true'
+    if: needs.prepare.outputs.is_owner == 'true' && needs.prepare.outputs.macos_requested == 'true'
     needs: [prepare, mirror-macos]
     runs-on: ubuntu-24.04
     environment: ${{ needs.prepare.outputs.channel }}-release
     concurrency:
       group: flowzero-promote-${{ needs.prepare.outputs.channel }}-macos-arm64
       cancel-in-progress: false
+      queue: max
     steps:
       - name: Checkout frozen release infrastructure
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -846,13 +876,14 @@ jobs:
           retention-days: 30
 
   promote-windows:
-    if: needs.prepare.outputs.windows_requested == 'true'
+    if: needs.prepare.outputs.is_owner == 'true' && needs.prepare.outputs.windows_requested == 'true'
     needs: [prepare, mirror-windows]
     runs-on: ubuntu-24.04
     environment: ${{ needs.prepare.outputs.channel }}-release
     concurrency:
       group: flowzero-promote-${{ needs.prepare.outputs.channel }}-windows-x64
       cancel-in-progress: false
+      queue: max
     steps:
       - name: Checkout frozen release infrastructure
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -891,7 +922,7 @@ jobs:
           retention-days: 30
 
   canary-macos:
-    if: needs.prepare.outputs.macos_requested == 'true'
+    if: needs.prepare.outputs.is_owner == 'true' && needs.prepare.outputs.macos_requested == 'true'
     needs: [prepare, promote-macos]
     runs-on: ubuntu-24.04
     steps:
@@ -909,7 +940,7 @@ jobs:
           --version "${{ needs.prepare.outputs.version }}"
 
   canary-windows:
-    if: needs.prepare.outputs.windows_requested == 'true'
+    if: needs.prepare.outputs.is_owner == 'true' && needs.prepare.outputs.windows_requested == 'true'
     needs: [prepare, promote-windows]
     runs-on: ubuntu-24.04
     steps:
@@ -930,6 +961,7 @@ jobs:
     if: >-
       always()
       && needs.prepare.result == 'success'
+      && needs.prepare.outputs.is_owner == 'true'
       && (needs.prepare.outputs.macos_requested != 'true' || needs.canary-macos.result == 'success')
       && (needs.prepare.outputs.windows_requested != 'true' || needs.canary-windows.result == 'success')
     needs: [prepare, mirror-macos, mirror-windows, canary-macos, canary-windows]

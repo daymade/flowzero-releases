@@ -66,12 +66,14 @@ export function releaseIntentFromEvent(event) {
   }
 
   assert(event.ref === 'refs/heads/main', 'manual release infrastructure ref must be main');
-  return validateReleaseIntent(buildManualReleaseIntent({
+  const intent = validateReleaseIntent(buildManualReleaseIntent({
     version: event.inputs?.version,
     headSha: event.inputs?.head_sha,
     platforms: event.inputs?.platforms,
     variant: event.inputs?.variant,
   }));
+  assert(event.inputs?.transaction_id === intent.transaction_id, 'manual release transaction ID mismatch');
+  return intent;
 }
 
 export function validateReleaseIntent(input) {

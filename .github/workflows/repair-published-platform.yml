@@ -37,6 +37,7 @@ jobs:
     concurrency:
       group: flowzero-promote-${{ inputs.channel }}-${{ inputs.platform }}
       cancel-in-progress: false
+      queue: max
     steps:
       - name: Validate exact repair toolkit
         run: >-
@@ -158,4 +159,3 @@ jobs:
           path: ${{ runner.temp }}/state
           if-no-files-found: error
           retention-days: 30
-

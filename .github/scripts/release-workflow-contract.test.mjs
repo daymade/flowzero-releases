@@ -12,6 +12,7 @@ const promoteAction = await readFile(new URL('../actions/promote-update-channel/
 const mirrorScript = await readFile(new URL('./mirror-release-assets.mjs', import.meta.url), 'utf8');
 const promoteScript = await readFile(new URL('./promote-platform-channel.mjs', import.meta.url), 'utf8');
 const archiveScript = await readFile(new URL('./archive-release.mjs', import.meta.url), 'utf8');
+const claimScript = await readFile(new URL('./claim-release-transaction.mjs', import.meta.url), 'utf8');
 const resumeMirrorWorkflow = await readFile(
   new URL('../workflows/resume-platform-mirror.yml', import.meta.url),
   'utf8',
@@ -85,6 +86,30 @@ test('source qualification runs once and platform builds consume the exact quali
   assert.match(windowsBuild, /pnpm run release:build:ci/u);
   for (const block of [qualification, macBuild, windowsBuild]) {
     assert.match(block, /ref: \$\{\{ needs\.prepare\.outputs\.head_sha \}\}/u);
+  }
+});
+
+test('every downstream release job is gated by the durable transaction owner claim', () => {
+  for (const name of [
+    'qualify-source',
+    'build-macos',
+    'finalize-macos',
+    'accept-macos',
+    'build-windows',
+    'accept-windows',
+    'mirror-macos',
+    'mirror-windows',
+    'promote-macos',
+    'promote-windows',
+    'canary-macos',
+    'canary-windows',
+    'archive-release',
+  ]) {
+    assert.match(
+      jobBlock(name),
+      /needs\.prepare\.outputs\.is_owner == 'true'/u,
+      `${name} can run without owning the durable release transaction`,
+    );
   }
 });
 
@@ -223,8 +248,18 @@ test('ordering and current tombstone policy are checked before every external wr
   assert.match(archiveScript, /assertCurrentReleaseTagAllowed/u);
   assert.match(workflow, /workflow_dispatch:/u);
   assert.match(workflow, /head_sha:/u);
+  assert.match(workflow, /transaction_id:/u);
   assert.match(workflow, /platforms:/u);
   assert.match(workflow, /variant:/u);
+  assert.match(
+    workflow,
+    /group: release-transaction-\$\{\{ github\.event\.client_payload\.intent\.transaction_id \|\| inputs\.transaction_id \}\}/u,
+  );
+  assert.match(workflow, /queue: max/u);
+  assert.match(workflow, /claim-release-transaction\.mjs/u);
+  assert.match(claimScript, /--if-none-match/u);
+  assert.match(workflow, /secrets\.R2_ACCESS_KEY_ID/u);
+  assert.match(workflow, /steps\.claim\.outputs\.is_owner/u);
 });
 
 test('privileged jobs consume the release infrastructure SHA frozen at transaction start', () => {
@@ -247,8 +282,13 @@ test('every operator path shares the same non-cancelling per-platform writer loc
   for (const source of operatorWorkflows) {
     assert.match(source, /group: flowzero-promote-\$\{\{ inputs\.channel \}\}-\$\{\{ inputs\.platform \}\}/u);
     assert.match(source, /cancel-in-progress: false/u);
+    assert.match(source, /queue: max/u);
   }
   assert.match(operatorWorkflows[2], /checkpoints\/\$\{\{ inputs\.tag \}\}\.json/u);
   assert.match(operatorWorkflows[3], /rehydrate-platform-archive\.mjs/u);
   assert.match(operatorWorkflows[4], /withdraw-platform-channel\.mjs/u);
+  for (const name of ['promote-macos', 'promote-windows']) {
+    assert.match(jobBlock(name), /cancel-in-progress: false/u);
+    assert.match(jobBlock(name), /queue: max/u);
+  }
 });

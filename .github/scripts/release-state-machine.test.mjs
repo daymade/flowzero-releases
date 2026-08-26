@@ -427,6 +427,7 @@ test('restores a manual Actions entry without weakening immutable source identit
     inputs: {
       version: '1.2.3-beta.4',
       head_sha: sourceSha,
+      transaction_id: manual.transaction_id,
       platforms: 'all',
       variant: 'standard',
     },
@@ -437,11 +438,25 @@ test('restores a manual Actions entry without weakening immutable source identit
       inputs: {
         version: '1.2.3-beta.4',
         head_sha: sourceSha,
+        transaction_id: manual.transaction_id,
         platforms: 'all',
         variant: 'standard',
       },
     }),
     /infrastructure ref must be main/u,
+  );
+  assert.throws(
+    () => releaseIntentFromEvent({
+      ref: 'refs/heads/main',
+      inputs: {
+        version: '1.2.3-beta.4',
+        head_sha: sourceSha,
+        transaction_id: `sha256:${'0'.repeat(64)}`,
+        platforms: 'all',
+        variant: 'standard',
+      },
+    }),
+    /transaction ID mismatch/u,
   );
 });
 
