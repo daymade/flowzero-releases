@@ -209,7 +209,7 @@ export function validateVerificationReceipt(receipt, candidateEnvelope) {
         && live.timeline_origin === 'stepfun_timestamped_delta'
         && live.timeline_segment_count >= 1
         && live.timeline_duration_ms > 0
-        && live.transcription_source === 'live_provider'
+        && live.transcription_source === 'stepfun_sse'
         && live.mock_inputs_present === false
         && live.runtime === 'pyannote_community1_mps'
         && String(live.device || '').toLowerCase() === 'mps'

@@ -163,7 +163,7 @@ function macLiveVerification(candidate, overrides = {}) {
         timeline_origin: 'stepfun_timestamped_delta',
         timeline_segment_count: 3,
         timeline_duration_ms: 15534,
-        transcription_source: 'live_provider',
+        transcription_source: 'stepfun_sse',
         mock_inputs_present: false,
         runtime: 'pyannote_community1_mps',
         device: 'mps',
