@@ -24,6 +24,56 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+export function buildManualReleaseIntent({ version, headSha, platforms, variant }) {
+  const parsedTag = parseProjectReleaseTag(`v${version}`);
+  assert(/^[a-f0-9]{40}$/.test(headSha || ''), 'manual release source SHA is invalid');
+  assert(['macos-arm64', 'windows-x64', 'all'].includes(platforms), 'manual release platforms are invalid');
+  assert(['standard', 'offline'].includes(variant), 'manual release variant is invalid');
+  const requestedPlatforms = platforms === 'all' ? [...SUPPORTED_PLATFORMS] : [platforms];
+  const identity = {
+    schema: INTENT_SCHEMA,
+    source: {
+      repository: 'daymade/flowzero',
+      head_sha: headSha,
+    },
+    release: {
+      version: parsedTag.version,
+      tag: parsedTag.tag,
+      channel: parsedTag.channel,
+      variant,
+    },
+    requested_platforms: requestedPlatforms,
+    promotion_policy: { mode: 'platform_independent' },
+    archive_policy: {
+      mode: 'eventual_bundle',
+      required_platforms: requestedPlatforms,
+    },
+  };
+  return {
+    ...identity,
+    transaction_id: `sha256:${createHash('sha256').update(canonicalJson(identity)).digest('hex')}`,
+  };
+}
+
+export function releaseIntentFromEvent(event) {
+  if (event.action === 'release') {
+    const intent = validateReleaseIntent(event.client_payload?.intent);
+    assert(event.client_payload.version === intent.release.version, 'legacy payload version disagrees with intent');
+    assert(event.client_payload.headSha === intent.source.head_sha, 'legacy payload headSha disagrees with intent');
+    assert(Boolean(event.client_payload.offline) === (intent.release.variant === 'offline'), 'legacy payload offline disagrees with intent');
+    assert(event.client_payload.ref === 'main', 'legacy payload ref must be main');
+    return intent;
+  }
+
+  assert(event.ref === 'refs/heads/main', 'manual release infrastructure ref must be main');
+  return validateReleaseIntent(buildManualReleaseIntent({
+    version: event.inputs?.version,
+    headSha: event.inputs?.head_sha,
+    platforms: event.inputs?.platforms,
+    variant: event.inputs?.variant,
+  }));
+}
+
 export function validateReleaseIntent(input) {
   assert(input && typeof input === 'object' && !Array.isArray(input), 'release intent must be an object');
   assert(input.schema === INTENT_SCHEMA, 'release intent schema is unsupported');
@@ -121,12 +171,7 @@ function parseArguments(argv) {
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArguments(argv);
   const event = JSON.parse(await readFile(path.resolve(args['--event-file']), 'utf8'));
-  assert(event.action === 'release', 'release transaction requires repository_dispatch release event');
-  const intent = validateReleaseIntent(event.client_payload?.intent);
-  assert(event.client_payload.version === intent.release.version, 'legacy payload version disagrees with intent');
-  assert(event.client_payload.headSha === intent.source.head_sha, 'legacy payload headSha disagrees with intent');
-  assert(Boolean(event.client_payload.offline) === (intent.release.variant === 'offline'), 'legacy payload offline disagrees with intent');
-  assert(event.client_payload.ref === 'main', 'legacy payload ref must be main');
+  const intent = releaseIntentFromEvent(event);
   const transaction = buildReleaseTransaction({
     intent,
     releaseInfrastructureSha: args['--release-infra-sha'],

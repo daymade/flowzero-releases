@@ -1,0 +1,66 @@
+name: Deploy Release Download Gateway
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - workers/release-download/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-release-download-gateway-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: workers/release-download
+    steps:
+      - name: Checkout exact gateway revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: workers/release-download/pnpm-lock.yaml
+
+      - name: Install exact gateway dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify gateway contract
+        run: pnpm test
+
+      - name: Deploy exact Worker revision
+        run: pnpm run deploy
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+
+      - name: Verify workers.dev and custom route
+        env:
+          WORKERS_DEV_ORIGIN: ${{ vars.FLOWZERO_WORKER_DEV_ORIGIN }}
+          CUSTOM_ORIGIN: ${{ vars.FLOWZERO_DOWNLOAD_ORIGIN }}
+        run: |
+          set -euo pipefail
+          for origin in "$WORKERS_DEV_ORIGIN" "$CUSTOM_ORIGIN"; do
+            curl --fail --silent --show-error --retry 6 --retry-delay 5 \
+              --head "$origin/_health" \
+              | grep -i '^x-flowzero-release-gateway: 1'
+            curl --fail --silent --show-error --retry 6 --retry-delay 5 \
+              "$origin/_health" \
+              | node -e "let body='';process.stdin.on('data',chunk=>body+=chunk).on('end',()=>{const value=JSON.parse(body);if(value.service!=='flowzero-release-download'||value.status!=='ok')process.exit(1)})"
+          done

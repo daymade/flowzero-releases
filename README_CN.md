@@ -25,6 +25,8 @@
 - 构建流程通过 GitHub Actions 执行。
 - 源码位于私有仓库中维护。
 
+标准入口由私有源码仓 dispatch 内容寻址的 Release Intent。Actions 页面仍保留手动恢复入口，但同样必须填写私有 `main` 上的精确源码 SHA、版本、平台集合与 variant，不会按分支猜源码。
+
 ## 发布资产契约
 
 | 平台 | 架构 | 文件 |

@@ -25,6 +25,10 @@ This repository records signed releases and runs the release pipeline.
 - Build pipeline runs in GitHub Actions.
 - Source code is maintained in a private repository.
 
+The private source repository normally dispatches a content-addressed release
+intent. The Actions manual entry remains available for recovery, but still
+requires the exact private-main source SHA, version, platform set, and variant.
+
 ## Release Asset Contract
 
 | Platform | Architecture | Files |

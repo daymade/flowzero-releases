@@ -3,8 +3,10 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import {
+  buildManualReleaseIntent,
   buildReleaseTransaction,
   canonicalJson,
+  releaseIntentFromEvent,
   validateReleaseIntent,
 } from './release-transaction.mjs';
 import {
@@ -256,6 +258,38 @@ test('validates the same content-addressed intent emitted by the source reposito
   assert.throws(
     () => validateReleaseIntent({ ...releaseIntent, transaction_id: `sha256:${sha('9')}` }),
     /transaction id/,
+  );
+});
+
+test('restores a manual Actions entry without weakening immutable source identity', () => {
+  const manual = buildManualReleaseIntent({
+    version: '1.2.3-beta.4',
+    headSha: sourceSha,
+    platforms: 'all',
+    variant: 'standard',
+  });
+  assert.deepEqual(manual.requested_platforms, ['macos-arm64', 'windows-x64']);
+  assert.deepEqual(validateReleaseIntent(manual), manual);
+  assert.deepEqual(releaseIntentFromEvent({
+    ref: 'refs/heads/main',
+    inputs: {
+      version: '1.2.3-beta.4',
+      head_sha: sourceSha,
+      platforms: 'all',
+      variant: 'standard',
+    },
+  }), manual);
+  assert.throws(
+    () => releaseIntentFromEvent({
+      ref: 'refs/heads/feature',
+      inputs: {
+        version: '1.2.3-beta.4',
+        head_sha: sourceSha,
+        platforms: 'all',
+        variant: 'standard',
+      },
+    }),
+    /infrastructure ref must be main/u,
   );
 });
 

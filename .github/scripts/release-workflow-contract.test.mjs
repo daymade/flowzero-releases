@@ -3,6 +3,10 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const workflow = await readFile(new URL('../workflows/release.yml', import.meta.url), 'utf8');
+const workerDeployWorkflow = await readFile(
+  new URL('../workflows/deploy-release-download-worker.yml', import.meta.url),
+  'utf8',
+);
 const mirrorAction = await readFile(new URL('../actions/mirror-release-assets/action.yml', import.meta.url), 'utf8');
 const promoteAction = await readFile(new URL('../actions/promote-update-channel/action.yml', import.meta.url), 'utf8');
 const mirrorScript = await readFile(new URL('./mirror-release-assets.mjs', import.meta.url), 'utf8');
@@ -32,6 +36,24 @@ test('all external actions are pinned to immutable full commit SHAs', () => {
   for (const value of external) {
     assert.match(value, /^[^@]+@[a-f0-9]{40}$/u, `un-pinned action: ${value}`);
   }
+});
+
+test('the download gateway has remote CD with exact credentials and two-route readback', () => {
+  const uses = [...workerDeployWorkflow.matchAll(/^\s+uses:\s+([^\s#]+)/gmu)]
+    .map((match) => match[1]);
+  assert.ok(uses.length > 0);
+  for (const value of uses) {
+    assert.match(value, /^[^@]+@[a-f0-9]{40}$/u, `un-pinned gateway deploy action: ${value}`);
+  }
+  assert.match(workerDeployWorkflow, /workflow_dispatch:/u);
+  assert.match(workerDeployWorkflow, /workers\/release-download\/\*\*/u);
+  assert.match(workerDeployWorkflow, /pnpm run deploy/u);
+  assert.match(workerDeployWorkflow, /secrets\.CLOUDFLARE_API_KEY/u);
+  assert.match(workerDeployWorkflow, /secrets\.CLOUDFLARE_EMAIL/u);
+  assert.match(workerDeployWorkflow, /secrets\.CLOUDFLARE_ACCOUNT_ID/u);
+  assert.match(workerDeployWorkflow, /vars\.FLOWZERO_WORKER_DEV_ORIGIN/u);
+  assert.match(workerDeployWorkflow, /vars\.FLOWZERO_DOWNLOAD_ORIGIN/u);
+  assert.match(workerDeployWorkflow, /_health/u);
 });
 
 test('source qualification runs once and platform builds consume the exact qualified SHA', () => {
@@ -125,7 +147,10 @@ test('ordering and current tombstone policy are checked before every external wr
     assert.match(source, /assertCurrentReleaseTagAllowed/u);
   }
   assert.match(archiveScript, /assertCurrentReleaseTagAllowed/u);
-  assert.doesNotMatch(workflow, /workflow_dispatch:/u);
+  assert.match(workflow, /workflow_dispatch:/u);
+  assert.match(workflow, /head_sha:/u);
+  assert.match(workflow, /platforms:/u);
+  assert.match(workflow, /variant:/u);
 });
 
 test('privileged jobs consume the release infrastructure SHA frozen at transaction start', () => {

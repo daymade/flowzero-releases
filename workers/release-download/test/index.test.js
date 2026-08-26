@@ -62,6 +62,25 @@ test('parses bounded, open, and suffix byte ranges', () => {
   assert.equal(parseSingleRange('bytes=1-2,4-5', 8), null);
 });
 
+test('exposes a bodyless-or-json health probe without touching R2', async () => {
+  const { calls, env } = makeEnvironment();
+  const getResponse = await handleRequest(new Request('https://example.test/_health'), env);
+  const headResponse = await handleRequest(
+    new Request('https://example.test/_health', { method: 'HEAD' }),
+    env,
+  );
+
+  assert.equal(getResponse.status, 200);
+  assert.equal(getResponse.headers.get('X-Flowzero-Release-Gateway'), '1');
+  assert.deepEqual(await getResponse.json(), {
+    service: 'flowzero-release-download',
+    status: 'ok',
+  });
+  assert.equal(headResponse.status, 200);
+  assert.equal(await headResponse.text(), '');
+  assert.deepEqual(calls, []);
+});
+
 test('serves immutable release objects with full response metadata', async () => {
   const { calls, env } = makeEnvironment();
   const response = await handleRequest(new Request(`https://example.test/${KEY}`), env);

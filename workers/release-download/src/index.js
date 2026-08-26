@@ -84,12 +84,26 @@ function notFound() {
   return new Response('Not Found', { status: 404 });
 }
 
+function healthResponse(method) {
+  const body = JSON.stringify({ service: 'flowzero-release-download', status: 'ok' });
+  const headers = {
+    'Cache-Control': 'no-store',
+    'Content-Type': 'application/json; charset=utf-8',
+    'X-Flowzero-Release-Gateway': '1',
+  };
+  return new Response(method === 'HEAD' ? null : body, { status: 200, headers });
+}
+
 export async function handleRequest(request, env) {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return new Response('Method Not Allowed', {
       status: 405,
       headers: { Allow: 'GET, HEAD' },
     });
+  }
+
+  if (new URL(request.url).pathname === '/_health') {
+    return healthResponse(request.method);
   }
 
   const key = parseObjectKey(request.url);

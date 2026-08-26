@@ -3,6 +3,33 @@ name: Release Flowzero
 on:
   repository_dispatch:
     types: [release]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact package version already committed on private main
+        required: true
+        type: string
+      head_sha:
+        description: Exact 40-character private source SHA on main
+        required: true
+        type: string
+      platforms:
+        description: Platform lanes to request
+        required: true
+        type: choice
+        default: macos-arm64
+        options:
+          - macos-arm64
+          - windows-x64
+          - all
+      variant:
+        description: Release variant
+        required: true
+        type: choice
+        default: standard
+        options:
+          - standard
+          - offline
 
 permissions:
   contents: read
