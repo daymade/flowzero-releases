@@ -301,8 +301,11 @@ test('a verifier-only macOS correction reuses one immutable candidate and emits 
   assert.match(reverifyMacBusinessWorkflow, /candidate_source_sha:/u);
   assert.match(reverifyMacBusinessWorkflow, /verifier_source_sha:/u);
   assert.match(reverifyMacBusinessWorkflow, /git merge-base --is-ancestor/u);
+  assert.match(reverifyMacBusinessWorkflow, /CLAUDE\.md\|scripts\/packaged-meeting-ui-smoke\.cjs/u);
+  assert.match(reverifyMacBusinessWorkflow, /scripts\/run-packaged-smoke\.cjs/u);
   assert.match(reverifyMacBusinessWorkflow, /docs\/updates\/UPDATE_SERVER\.md/u);
   assert.match(reverifyMacBusinessWorkflow, /verifier-only recovery changed product or unrelated file/u);
+  assert.match(reverifyMacBusinessWorkflow, /repository: daymade\/flowzero-releases[\s\S]*ref: \$\{\{ github\.sha \}\}[\s\S]*path: \.release-toolkit/u);
   assert.match(reverifyMacBusinessWorkflow, /artifact-ids: \$\{\{ inputs\.candidate_artifact_id \}\}/u);
   assert.match(reverifyMacBusinessWorkflow, /artifact-ids: \$\{\{ inputs\.fixture_verification_artifact_id \}\}/u);
   assert.equal((reverifyMacBusinessWorkflow.match(/run-id: \$\{\{ inputs\.source_run_id \}\}/gu) || []).length, 2);
@@ -313,6 +316,10 @@ test('a verifier-only macOS correction reuses one immutable candidate and emits 
   assert.match(reverifyMacBusinessWorkflow, /FLOWZERO_VERIFY_STEPFUN_API_KEY: \$\{\{ secrets\.FLOWZERO_STEPFUN_API_KEY \}\}/u);
   assert.match(reverifyMacBusinessWorkflow, /fixture-verification\/verification\.json/u);
   assert.match(reverifyMacBusinessWorkflow, /reverified\/live-stepfun-timeline\.json/u);
+  assert.match(reverifyMacBusinessWorkflow, /deterministic fixture receipt verifier identity mismatch/u);
+  assert.match(reverifyMacBusinessWorkflow, /live StepFun receipt verifier identity mismatch/u);
+  assert.match(reverifyMacBusinessWorkflow, /release-platform-checkpoint\.mjs \\\n+\s+--phase build_created/u);
+  assert.match(reverifyMacBusinessWorkflow, /release-platform-checkpoint\.mjs \\\n+\s+--phase platform_verified[\s\S]*--verification "\$RUNNER_TEMP\/fixture-verification\/verification\.json"[\s\S]*--verification "\$RUNNER_TEMP\/reverified\/live-stepfun-timeline\.json"/u);
   assert.match(reverifyMacBusinessWorkflow, /macos-business-reverification-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u);
   assert.doesNotMatch(reverifyMacBusinessWorkflow, /release:build:ci|release:notarize:ci|forge:/u);
 });

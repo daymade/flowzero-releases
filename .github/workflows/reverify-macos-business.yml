@@ -70,13 +70,23 @@ jobs:
           git diff --name-only "${{ inputs.candidate_source_sha }}" "${{ inputs.verifier_source_sha }}" > "$RUNNER_TEMP/verifier-diff.txt"
           while IFS= read -r changed; do
             case "$changed" in
-              scripts/packaged-meeting-ui-smoke.cjs|scripts/release-verify-ci.cjs|apps/desktop/src/helpers/__tests__/meetingWorkflowScripts.test.js|docs/references/asr-provider-sop.md|docs/references/packaging-sop.md|docs/updates/UPDATE_SERVER.md) ;;
+              CLAUDE.md|scripts/packaged-meeting-ui-smoke.cjs|scripts/run-packaged-smoke.cjs|scripts/release-verify-ci.cjs|apps/desktop/src/helpers/__tests__/meetingWorkflowScripts.test.js|docs/references/asr-provider-sop.md|docs/references/packaging-sop.md|docs/updates/UPDATE_SERVER.md) ;;
               *) echo "verifier-only recovery changed product or unrelated file: $changed" >&2; exit 1 ;;
             esac
           done < "$RUNNER_TEMP/verifier-diff.txt"
           test -s "$RUNNER_TEMP/verifier-diff.txt"
         env:
           GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+
+      - name: Checkout exact public release validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero-releases
+          ref: ${{ github.sha }}
+          path: .release-toolkit
+          fetch-depth: 1
+          lfs: false
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -131,7 +141,37 @@ jobs:
           set -euo pipefail
           test -s "$RUNNER_TEMP/fixture-verification/verification.json"
           test -s "$RUNNER_TEMP/reverified/live-stepfun-timeline.json"
+          node -e '
+            const fs = require("node:fs");
+            const fixture = JSON.parse(fs.readFileSync(process.env.FIXTURE_RECEIPT));
+            const live = JSON.parse(fs.readFileSync(process.env.LIVE_RECEIPT));
+            if (fixture.suite !== "macos-voice-context"
+              || (fixture.verifier_head_sha || fixture.source_head_sha) !== process.env.CANDIDATE_SHA) {
+              throw new Error("deterministic fixture receipt verifier identity mismatch");
+            }
+            if (live.suite !== "macos-live-stepfun-timeline"
+              || live.verifier_head_sha !== process.env.VERIFIER_SHA) {
+              throw new Error("live StepFun receipt verifier identity mismatch");
+            }
+          '
+          mkdir -p "$RUNNER_TEMP/reverify-state"
+          node .release-toolkit/.github/scripts/release-platform-checkpoint.mjs \
+            --phase build_created \
+            --candidate "$RUNNER_TEMP/mac-final/evidence/candidate.json" \
+            --output "$RUNNER_TEMP/reverify-state/build-created.json"
+          node .release-toolkit/.github/scripts/release-platform-checkpoint.mjs \
+            --phase platform_verified \
+            --candidate "$RUNNER_TEMP/mac-final/evidence/candidate.json" \
+            --parent "$RUNNER_TEMP/reverify-state/build-created.json" \
+            --verification "$RUNNER_TEMP/fixture-verification/verification.json" \
+            --verification "$RUNNER_TEMP/reverified/live-stepfun-timeline.json" \
+            --output "$RUNNER_TEMP/reverify-state/platform-verified.json"
           cp "$RUNNER_TEMP/fixture-verification/verification.json" "$RUNNER_TEMP/reverified/verification.json"
+        env:
+          FIXTURE_RECEIPT: ${{ runner.temp }}/fixture-verification/verification.json
+          LIVE_RECEIPT: ${{ runner.temp }}/reverified/live-stepfun-timeline.json
+          CANDIDATE_SHA: ${{ inputs.candidate_source_sha }}
+          VERIFIER_SHA: ${{ inputs.verifier_source_sha }}
 
       - name: Upload combined Mac business verification
         id: upload
