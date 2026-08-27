@@ -6,6 +6,7 @@ import {
   assertReleaseIdentity,
   getRelease,
   getReleaseById,
+  run,
   verifyReleaseAttestation,
   verifyReleaseAssets,
 } from './archive-release.mjs';
@@ -111,13 +112,27 @@ test('archive refreshes an existing draft by immutable release ID', () => {
   assert.deepEqual(getReleaseById('daymade/flowzero-releases', 42, { runCommand }), draft);
 });
 
-test('release attestation verification succeeds immediately without sleeping', async () => {
+const releaseTag = 'v1.2.3-beta.4';
+const releaseSubjectSha = 'a'.repeat(40);
+const releaseRepository = 'daymade/flowzero-releases';
+const releaseAttestationPath = `repos/${releaseRepository}/attestations/sha1:${releaseSubjectSha}?per_page=100&predicate_type=release`;
+const githubAttestationResponse = JSON.stringify({
+  attestations: [{ initiator: 'github', bundle_url: 'https://example.invalid/release-attestation' }],
+});
+const emptyAttestationResponse = JSON.stringify({ attestations: [] });
+
+test('release attestation verification succeeds after a structured query without sleeping', async () => {
   const calls = [];
   const sleeps = [];
-  const result = await verifyReleaseAttestation('daymade/flowzero-releases', 'v1.2.3-beta.4', {
+  const results = [
+    { status: 0, stdout: githubAttestationResponse, stderr: '' },
+    { status: 0, stdout: 'verified\n', stderr: '' },
+  ];
+  const result = await verifyReleaseAttestation(releaseRepository, releaseTag, {
+    subjectSha: releaseSubjectSha,
     runCommand: (command, args, options) => {
       calls.push({ command, args, options });
-      return { status: 0, stdout: 'verified\n', stderr: '' };
+      return results.shift();
     },
     sleep: async (delayMs) => sleeps.push(delayMs),
     now: () => 0,
@@ -126,23 +141,32 @@ test('release attestation verification succeeds immediately without sleeping', a
 
   assert.deepEqual(result, { attempts: 1, elapsed_ms: 0 });
   assert.deepEqual(sleeps, []);
-  assert.deepEqual(calls, [{
-    command: 'gh',
-    args: ['release', 'verify', 'v1.2.3-beta.4', '--repo', 'daymade/flowzero-releases'],
-    options: { allowFailure: true },
-  }]);
+  assert.deepEqual(calls, [
+    {
+      command: 'gh',
+      args: ['api', releaseAttestationPath],
+      options: { allowFailure: true, timeout: 120_000 },
+    },
+    {
+      command: 'gh',
+      args: ['release', 'verify', releaseTag, '--repo', releaseRepository],
+      options: { allowFailure: true, timeout: 120_000 },
+    },
+  ]);
 });
 
-test('release attestation verification retries only the exact pending state', async () => {
+test('structured zero-attestation responses retry without upload or publication calls', async () => {
   const calls = [];
   const sleeps = [];
   let clock = 0;
   const results = [
-    { status: 1, stdout: '', stderr: `no attestations for tag v1.2.3-beta.4 (sha1:${'a'.repeat(40)})` },
-    { status: 1, stdout: '', stderr: `no attestations found for tag v1.2.3-beta.4 (sha1:${'a'.repeat(40)})` },
+    { status: 0, stdout: emptyAttestationResponse, stderr: '' },
+    { status: 0, stdout: emptyAttestationResponse, stderr: '' },
+    { status: 0, stdout: githubAttestationResponse, stderr: '' },
     { status: 0, stdout: 'verified\n', stderr: '' },
   ];
-  const result = await verifyReleaseAttestation('daymade/flowzero-releases', 'v1.2.3-beta.4', {
+  const result = await verifyReleaseAttestation(releaseRepository, releaseTag, {
+    subjectSha: releaseSubjectSha,
     runCommand: (command, args, options) => {
       calls.push({ command, args, options });
       return results.shift();
@@ -158,58 +182,47 @@ test('release attestation verification retries only the exact pending state', as
 
   assert.deepEqual(result, { attempts: 3, elapsed_ms: 6_000 });
   assert.deepEqual(sleeps, [2_000, 4_000]);
-  assert.equal(calls.length, 3);
-  for (const call of calls) {
-    assert.deepEqual(call, {
-      command: 'gh',
-      args: ['release', 'verify', 'v1.2.3-beta.4', '--repo', 'daymade/flowzero-releases'],
-      options: { allowFailure: true },
-    });
-  }
+  assert.deepEqual(calls.map(({ args }) => args), [
+    ['api', releaseAttestationPath],
+    ['api', releaseAttestationPath],
+    ['api', releaseAttestationPath],
+    ['release', 'verify', releaseTag, '--repo', releaseRepository],
+  ]);
+  assert.equal(calls.some(({ args }) => args.includes('upload') || args.includes('PATCH')), false);
 });
 
-test('both official release-attestation absence forms are retryable for the exact target', async (t) => {
-  const pendingDetails = [
-    `no attestations for tag v1.2.3-beta.4 (sha1:${'a'.repeat(40)})`,
-    'no attestations found for release v1.2.3-beta.4 in daymade/flowzero-releases',
+test('an existing same-SHA attestation retries only the exact filtered-tag absence', async () => {
+  let clock = 0;
+  const sleeps = [];
+  const results = [
+    { status: 0, stdout: githubAttestationResponse, stderr: '' },
+    { status: 1, stdout: '', stderr: `no attestations found for release ${releaseTag} in flowzero-releases` },
+    { status: 0, stdout: githubAttestationResponse, stderr: '' },
+    { status: 0, stdout: 'verified\n', stderr: '' },
   ];
-  for (const detail of pendingDetails) {
-    await t.test(detail, async () => {
-      let clock = 0;
-      let calls = 0;
-      const result = await verifyReleaseAttestation('daymade/flowzero-releases', 'v1.2.3-beta.4', {
-        runCommand: () => {
-          calls += 1;
-          return calls === 1
-            ? { status: 1, stdout: '', stderr: detail }
-            : { status: 0, stdout: 'verified', stderr: '' };
-        },
-        sleep: async (delayMs) => { clock += delayMs; },
-        now: () => clock,
-        retryDelaysMs: [1],
-        writeStatus: () => {},
-      });
-      assert.equal(result.attempts, 2);
-    });
-  }
+  const result = await verifyReleaseAttestation(releaseRepository, releaseTag, {
+    subjectSha: releaseSubjectSha,
+    runCommand: () => results.shift(),
+    sleep: async (delayMs) => {
+      sleeps.push(delayMs);
+      clock += delayMs;
+    },
+    now: () => clock,
+    retryDelaysMs: [5],
+    writeStatus: () => {},
+  });
+  assert.deepEqual(result, { attempts: 2, elapsed_ms: 5 });
+  assert.deepEqual(sleeps, [5]);
 });
 
-test('release attestation verification fails immediately for terminal errors', async (t) => {
-  const terminalDetails = [
-    'HTTP 403: Resource not accessible by integration',
-    'unexpected EOF',
-    'duplicate attestations found',
-    'error parsing attestation envelope',
-    'failed to verify attestations',
-    `no attestations for tag v9.9.9 (sha1:${'a'.repeat(40)})`,
-    'no attestations found for release v1.2.3-beta.4 in other/repository',
-  ];
-  for (const detail of terminalDetails) {
+test('structured attestation query errors fail immediately and preserve the original error', async (t) => {
+  for (const detail of ['HTTP 403: Resource not accessible by integration', 'unexpected EOF']) {
     await t.test(detail, async () => {
       let calls = 0;
       let sleeps = 0;
       await assert.rejects(
-        verifyReleaseAttestation('daymade/flowzero-releases', 'v1.2.3-beta.4', {
+        verifyReleaseAttestation(releaseRepository, releaseTag, {
+          subjectSha: releaseSubjectSha,
           runCommand: () => {
             calls += 1;
             return { status: 1, stdout: '', stderr: detail };
@@ -226,17 +239,63 @@ test('release attestation verification fails immediately for terminal errors', a
   }
 });
 
+test('malformed structured attestation responses fail instead of becoming pending', async () => {
+  await assert.rejects(
+    verifyReleaseAttestation(releaseRepository, releaseTag, {
+      subjectSha: releaseSubjectSha,
+      runCommand: () => ({ status: 0, stdout: '{}', stderr: '' }),
+      now: () => 0,
+      writeStatus: () => {},
+    }),
+    /attestation query is invalid/u,
+  );
+});
+
+test('release verification terminal errors never retry after the API proves attestations exist', async (t) => {
+  const terminalDetails = [
+    `no attestations for tag ${releaseTag} (sha1:${releaseSubjectSha})`,
+    `no attestations found for release ${releaseTag} in owner/flowzero-releases`,
+    `no attestations found for release ${releaseTag} in flowzero-releases\nHTTP 403`,
+    'duplicate attestations found',
+    'error parsing attestation envelope',
+    'failed to verify attestations',
+  ];
+  for (const detail of terminalDetails) {
+    await t.test(detail, async () => {
+      let calls = 0;
+      let sleeps = 0;
+      await assert.rejects(
+        verifyReleaseAttestation(releaseRepository, releaseTag, {
+          subjectSha: releaseSubjectSha,
+          runCommand: () => {
+            calls += 1;
+            return calls === 1
+              ? { status: 0, stdout: githubAttestationResponse, stderr: '' }
+              : { status: 1, stdout: '', stderr: detail };
+          },
+          sleep: async () => { sleeps += 1; },
+          now: () => 0,
+          writeStatus: () => {},
+        }),
+        (error) => error.message.includes(detail),
+      );
+      assert.equal(calls, 2);
+      assert.equal(sleeps, 0);
+    });
+  }
+});
+
 test('release attestation pending state times out within the fixed deadline', async () => {
   let clock = 0;
   let calls = 0;
   const sleeps = [];
-  const pending = `no attestations for tag v1.2.3-beta.4 (sha1:${'a'.repeat(40)})`;
 
   await assert.rejects(
-    verifyReleaseAttestation('daymade/flowzero-releases', 'v1.2.3-beta.4', {
+    verifyReleaseAttestation(releaseRepository, releaseTag, {
+      subjectSha: releaseSubjectSha,
       runCommand: () => {
         calls += 1;
-        return { status: 1, stdout: '', stderr: pending };
+        return { status: 0, stdout: emptyAttestationResponse, stderr: '' };
       },
       sleep: async (delayMs) => {
         sleeps.push(delayMs);
@@ -249,12 +308,39 @@ test('release attestation pending state times out within the fixed deadline', as
     }),
     (error) => (
       /timed out/u.test(error.message)
-      && /attempts=4 elapsed_ms=100/u.test(error.message)
-      && error.message.includes(pending)
+      && /attempts=3 elapsed_ms=100/u.test(error.message)
+      && /zero github-initiated attestations/u.test(error.message)
       && /rerun the failed archive-release job/u.test(error.message)
       && /without uploading or publishing again/u.test(error.message)
     ),
   );
-  assert.equal(calls, 4);
+  assert.equal(calls, 3);
   assert.deepEqual(sleeps, [40, 40, 20]);
+});
+
+test('a stuck gh child is hard-bounded by the command timeout', () => {
+  const startedAt = Date.now();
+  assert.throws(
+    () => run(process.execPath, ['-e', 'setTimeout(() => {}, 1000)'], { timeout: 25 }),
+    (error) => error.code === 'ETIMEDOUT',
+  );
+  assert.ok(Date.now() - startedAt < 500);
+});
+
+test('a timed-out attestation query reports the resumable archive timeout', async () => {
+  const timeoutError = Object.assign(new Error('spawnSync gh ETIMEDOUT'), { code: 'ETIMEDOUT' });
+  await assert.rejects(
+    verifyReleaseAttestation(releaseRepository, releaseTag, {
+      subjectSha: releaseSubjectSha,
+      runCommand: () => { throw timeoutError; },
+      now: () => 0,
+      timeoutMs: 10,
+      writeStatus: () => {},
+    }),
+    (error) => (
+      /timed out/u.test(error.message)
+      && error.message.includes(timeoutError.message)
+      && /without uploading or publishing again/u.test(error.message)
+    ),
+  );
 });
