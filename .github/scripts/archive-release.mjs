@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 import { assertCurrentReleaseTagAllowed } from './check-current-release-tombstone.mjs';
 import { validateReleaseArchiveManifest } from './build-release-archive-manifest.mjs';
@@ -81,6 +82,93 @@ function parseGitHubJson(result, label) {
     return JSON.parse(result.stdout);
   } catch (error) {
     throw new Error(`${label} did not return JSON: ${error.message}`);
+  }
+}
+
+const RELEASE_ATTESTATION_TIMEOUT_MS = 120_000;
+const RELEASE_ATTESTATION_RETRY_DELAYS_MS = Object.freeze([
+  2_000,
+  4_000,
+  8_000,
+  16_000,
+  30_000,
+]);
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function readCommandFailure(result) {
+  return [result?.stderr, result?.stdout]
+    .filter((value) => typeof value === 'string' && value.trim())
+    .map((value) => value.trim())
+    .join('\n');
+}
+
+function isPendingReleaseAttestation(detail, repository, tag) {
+  const [owner, name, ...extra] = String(repository || '').split('/');
+  if (!owner || !name || extra.length > 0) return false;
+  const escapedTag = escapeRegExp(tag);
+  const escapedRepository = `${escapeRegExp(owner)}/${escapeRegExp(name)}`;
+  const patterns = [
+    new RegExp(`^no attestations(?: found)? for tag ${escapedTag} \\([^\\r\\n]+\\)$`, 'u'),
+    new RegExp(`^no attestations found for release ${escapedTag} in ${escapedRepository}$`, 'u'),
+  ];
+  return String(detail || '').split(/\r?\n/u).some((line) => (
+    patterns.some((pattern) => pattern.test(line.trim()))
+  ));
+}
+
+export async function verifyReleaseAttestation(repository, tag, {
+  runCommand = run,
+  sleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  now = () => performance.now(),
+  timeoutMs = RELEASE_ATTESTATION_TIMEOUT_MS,
+  retryDelaysMs = RELEASE_ATTESTATION_RETRY_DELAYS_MS,
+  writeStatus = (message) => process.stderr.write(message),
+} = {}) {
+  assert(typeof repository === 'string' && repository.trim(), 'GitHub repository is required');
+  assert(typeof tag === 'string' && tag.trim(), 'GitHub release tag is required');
+  assert(Number.isFinite(timeoutMs) && timeoutMs > 0, 'release attestation timeout is invalid');
+  assert(Array.isArray(retryDelaysMs) && retryDelaysMs.length > 0, 'release attestation retry delays are invalid');
+  const startedAt = now();
+  let attempts = 0;
+  let lastDetail = '';
+
+  while (true) {
+    attempts += 1;
+    const result = runCommand('gh', [
+      'release', 'verify', tag, '--repo', repository,
+    ], { allowFailure: true });
+    if (result.status === 0) {
+      return {
+        attempts,
+        elapsed_ms: Math.max(0, Math.round(now() - startedAt)),
+      };
+    }
+
+    lastDetail = readCommandFailure(result);
+    if (!isPendingReleaseAttestation(lastDetail, repository, tag)) {
+      throw new Error(`gh release verify failed: ${lastDetail || `exit ${result.status}`}`);
+    }
+
+    const elapsedMs = Math.max(0, now() - startedAt);
+    if (elapsedMs >= timeoutMs) {
+      throw new Error([
+        `release attestation verification timed out for ${tag}`,
+        `attempts=${attempts} elapsed_ms=${Math.round(elapsedMs)}`,
+        `last_error=${lastDetail}`,
+        'release is already immutable and its exact assets were verified; rerun the failed archive-release job to resume attestation verification without uploading or publishing again',
+      ].join('; '));
+    }
+
+    const configuredDelay = retryDelaysMs[Math.min(attempts - 1, retryDelaysMs.length - 1)];
+    assert(Number.isFinite(configuredDelay) && configuredDelay > 0, 'release attestation retry delay is invalid');
+    const delayMs = Math.min(configuredDelay, timeoutMs - elapsedMs);
+    writeStatus(
+      `[archive-release] release attestation pending tag=${tag} attempt=${attempts} elapsed_ms=${Math.round(elapsedMs)} retry_in_ms=${Math.round(delayMs)} deadline_ms=${timeoutMs}\n`,
+    );
+    await sleep(delayMs);
   }
 }
 
@@ -242,7 +330,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   assertReleaseIdentity(release, manifest, { expectedDraft: false, expectedImmutable: true });
   const liveFingerprint = verifyReleaseAssets(release, expected);
   if (draftFingerprint) assert(draftFingerprint === liveFingerprint, 'GitHub release assets changed during publication');
-  run('gh', ['release', 'verify', tag, '--repo', repository]);
+  await verifyReleaseAttestation(repository, tag);
   process.stdout.write(`archived immutable release ${tag}\n`);
   return release;
 }
