@@ -75,6 +75,95 @@ function assertNoTranscriptBearingKeys(value) {
   visit(value);
 }
 
+function assertExactKeys(value, allowedKeys, label, optionalKeys = new Set()) {
+  assert(value && typeof value === 'object' && !Array.isArray(value), `${label} must be an object`);
+  const unknown = Object.keys(value).filter((key) => !allowedKeys.has(key));
+  assert(unknown.length === 0, `${label} contains unsupported key(s): ${unknown.join(',')}`);
+  const missing = [...allowedKeys].filter((key) => !optionalKeys.has(key) && !Object.hasOwn(value, key));
+  assert(missing.length === 0, `${label} is missing key(s): ${missing.join(',')}`);
+}
+
+function projectLiveStepfunVerificationReceipt(receipt) {
+  const topLevelKeys = new Set([
+    'schema',
+    'status',
+    'suite',
+    'version',
+    'source_head_sha',
+    'verifier_head_sha',
+    'candidate_id',
+    'platform',
+    'subject',
+    'evidence',
+    'verified_at',
+  ]);
+  const subjectKeys = new Set(['name', 'size', 'sha256']);
+  const structureKeys = new Set(['kind', 'status']);
+  const liveKeys = new Set([
+    'kind',
+    'status',
+    'provider',
+    'model',
+    'transport',
+    'http_status',
+    'request_id_present',
+    'timeline_origin',
+    'timeline_segment_count',
+    'timeline_duration_ms',
+    'transcription_source',
+    'mock_inputs_present',
+    'runtime',
+    'device',
+    'cpu_inference_allowed',
+    'speaker_count',
+    'history_turn_count',
+    'history_written',
+    'memory_written',
+    'fts_searchable',
+    'capture_signal_verified',
+    'capture_signal_track_source',
+    'capture_signal_sample_count',
+    'capture_signal_rms',
+    'capture_signal_peak',
+    'zero_process_residue',
+  ]);
+  assertExactKeys(
+    receipt,
+    topLevelKeys,
+    'live StepFun verification receipt',
+    new Set(['candidate_id']),
+  );
+  assertExactKeys(receipt.subject, subjectKeys, 'live StepFun verification subject');
+  assert(Array.isArray(receipt.evidence) && receipt.evidence.length === 2, 'live StepFun verification evidence set is invalid');
+  const structureRows = receipt.evidence.filter((entry) => entry?.kind === 'macos_structure');
+  const liveRows = receipt.evidence.filter((entry) => entry?.kind === 'packaged_live_stepfun_timeline');
+  assert(structureRows.length === 1 && liveRows.length === 1, 'live StepFun verification evidence kinds are invalid');
+  assertExactKeys(structureRows[0], structureKeys, 'live StepFun structure evidence');
+  assertExactKeys(liveRows[0], liveKeys, 'live StepFun business evidence');
+  const projected = {
+    schema: receipt.schema,
+    status: receipt.status,
+    suite: receipt.suite,
+    version: receipt.version,
+    source_head_sha: receipt.source_head_sha,
+    verifier_head_sha: receipt.verifier_head_sha,
+    ...(receipt.candidate_id ? { candidate_id: receipt.candidate_id } : {}),
+    platform: receipt.platform,
+    subject: {
+      name: receipt.subject.name,
+      size: receipt.subject.size,
+      sha256: receipt.subject.sha256,
+    },
+    evidence: [
+      { kind: structureRows[0].kind, status: structureRows[0].status },
+      Object.fromEntries([...liveKeys].map((key) => [key, liveRows[0][key]])),
+    ],
+    verified_at: receipt.verified_at,
+  };
+  assertNoTranscriptBearingKeys(projected);
+  return projected;
+}
+
 export function validateCandidateEnvelope(envelope) {
   assert(envelope?.schema === CANDIDATE_SCHEMA, 'candidate schema is unsupported');
   assert(/^sha256:[a-f0-9]{64}$/.test(envelope.candidate_id || ''), 'candidate id is invalid');
@@ -152,6 +241,11 @@ export function validateVerificationReceipt(receipt, candidateEnvelope) {
   assert(receipt.platform === candidate.platform, 'verification platform mismatch');
   assert(receipt.version === candidate.release.version, 'verification version mismatch');
   assert(receipt.source_head_sha === candidate.source.head_sha, 'verification source SHA mismatch');
+  const verifierHeadSha = receipt.verifier_head_sha || receipt.source_head_sha;
+  assert(/^[a-f0-9]{40}$/.test(verifierHeadSha), 'verification toolkit SHA is invalid');
+  if (receipt.candidate_id !== undefined) {
+    assert(receipt.candidate_id === candidateEnvelope.candidate_id, 'verification candidate ID mismatch');
+  }
   const matchingSubjects = candidate.assets.filter((asset) => (
     asset.name === receipt.subject?.name
     && asset.sha256 === receipt.subject?.sha256
@@ -195,7 +289,7 @@ export function validateVerificationReceipt(receipt, candidateEnvelope) {
         'macOS business verification depended on ambient runtime state',
       );
     } else {
-      assertNoTranscriptBearingKeys(receipt);
+      const projectedReceipt = projectLiveStepfunVerificationReceipt(receipt);
       const live = receipt.evidence?.find(
         entry => entry.kind === 'packaged_live_stepfun_timeline' && entry.status === 'pass',
       );
@@ -219,9 +313,15 @@ export function validateVerificationReceipt(receipt, candidateEnvelope) {
         && live.history_written === true
         && live.memory_written === true
         && live.fts_searchable === true
+        && live.capture_signal_verified === true
+        && live.capture_signal_track_source === 'mixed'
+        && live.capture_signal_sample_count > 0
+        && live.capture_signal_rms > 0
+        && live.capture_signal_peak > 0
         && live.zero_process_residue === true,
         'macOS live StepFun timeline evidence is incomplete',
       );
+      return projectedReceipt;
     }
   } else {
     assert(subject.role === 'windows_setup', 'Windows verification subject must be the signed Setup executable');

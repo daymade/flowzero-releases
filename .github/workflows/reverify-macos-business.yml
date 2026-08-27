@@ -1,0 +1,143 @@
+name: Reverify macOS Business Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Original release run containing the immutable Mac candidate
+        required: true
+        type: string
+      candidate_artifact_id:
+        description: Exact final Mac candidate artifact ID
+        required: true
+        type: string
+      fixture_verification_artifact_id:
+        description: Exact deterministic Mac verification artifact ID from the source run
+        required: true
+        type: string
+      candidate_source_sha:
+        description: Exact private source SHA embedded in the candidate
+        required: true
+        type: string
+      verifier_source_sha:
+        description: Exact private main SHA containing verifier-only corrections
+        required: true
+        type: string
+      version:
+        description: Candidate version without v prefix
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  reverify:
+    runs-on: macos-15
+    timeout-minutes: 180
+    environment: beta-release
+    outputs:
+      verification_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Validate immutable candidate and verifier identities
+        run: >-
+          node -e "if(process.env.GITHUB_REF!=='refs/heads/main'||!/^\d+$/.test(process.env.RUN_ID)||!/^\d+$/.test(process.env.CANDIDATE_ARTIFACT_ID)||!/^\d+$/.test(process.env.FIXTURE_ARTIFACT_ID)||!/^[a-f0-9]{40}$/.test(process.env.CANDIDATE_SHA)||!/^[a-f0-9]{40}$/.test(process.env.VERIFIER_SHA))throw new Error('invalid macOS reverification identity')"
+        env:
+          RUN_ID: ${{ inputs.source_run_id }}
+          CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
+          FIXTURE_ARTIFACT_ID: ${{ inputs.fixture_verification_artifact_id }}
+          CANDIDATE_SHA: ${{ inputs.candidate_source_sha }}
+          VERIFIER_SHA: ${{ inputs.verifier_source_sha }}
+
+      - name: Checkout exact verifier source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ inputs.verifier_source_sha }}
+          fetch-depth: 0
+          lfs: true
+          persist-credentials: false
+
+      - name: Prove verifier is current private main and changes no product runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_main="$(gh api repos/daymade/flowzero/commits/main --jq .sha)"
+          test "$current_main" = "${{ inputs.verifier_source_sha }}"
+          git merge-base --is-ancestor "${{ inputs.candidate_source_sha }}" "${{ inputs.verifier_source_sha }}"
+          git diff --name-only "${{ inputs.candidate_source_sha }}" "${{ inputs.verifier_source_sha }}" > "$RUNNER_TEMP/verifier-diff.txt"
+          while IFS= read -r changed; do
+            case "$changed" in
+              scripts/packaged-meeting-ui-smoke.cjs|scripts/release-verify-ci.cjs|apps/desktop/src/helpers/__tests__/meetingWorkflowScripts.test.js|docs/references/asr-provider-sop.md|docs/references/packaging-sop.md|docs/updates/UPDATE_SERVER.md) ;;
+              *) echo "verifier-only recovery changed product or unrelated file: $changed" >&2; exit 1 ;;
+            esac
+          done < "$RUNNER_TEMP/verifier-diff.txt"
+          test -s "$RUNNER_TEMP/verifier-diff.txt"
+        env:
+          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install exact verifier dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Build deterministic voice fixture outside the app
+        run: node apps/desktop/scripts/meeting/build-meeting-e2e-fixtures.cjs
+
+      - name: Download exact immutable Mac candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ inputs.candidate_artifact_id }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/mac-final
+
+      - name: Download accepted deterministic business receipt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ inputs.fixture_verification_artifact_id }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/fixture-verification
+
+      - name: Reverify live StepFun on the same final candidate
+        run: >-
+          pnpm run release:verify:ci --
+          --suite macos-live-stepfun-timeline
+          --version "${{ inputs.version }}"
+          --head-sha "${{ inputs.candidate_source_sha }}"
+          --verifier-head-sha "${{ inputs.verifier_source_sha }}"
+          --candidate-manifest "$RUNNER_TEMP/mac-final/evidence/candidate.json"
+          --app-path "$RUNNER_TEMP/reverify/Flowzero.app"
+          --subject-file "$RUNNER_TEMP/mac-final/artifacts/Flowzero-${{ inputs.version }}-arm64.dmg"
+          --output "$RUNNER_TEMP/reverified/live-stepfun-timeline.json"
+        env:
+          FLOWZERO_VERIFY_STEPFUN_API_KEY: ${{ secrets.FLOWZERO_STEPFUN_API_KEY }}
+
+      - name: Assemble exact two-receipt Mac verification set
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$RUNNER_TEMP/fixture-verification/verification.json"
+          test -s "$RUNNER_TEMP/reverified/live-stepfun-timeline.json"
+          cp "$RUNNER_TEMP/fixture-verification/verification.json" "$RUNNER_TEMP/reverified/verification.json"
+
+      - name: Upload combined Mac business verification
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-business-reverification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/reverified
+          if-no-files-found: error
+          retention-days: 30

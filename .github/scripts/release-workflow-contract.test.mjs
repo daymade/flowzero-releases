@@ -17,6 +17,10 @@ const resumeMirrorWorkflow = await readFile(
   new URL('../workflows/resume-platform-mirror.yml', import.meta.url),
   'utf8',
 );
+const reverifyMacBusinessWorkflow = await readFile(
+  new URL('../workflows/reverify-macos-business.yml', import.meta.url),
+  'utf8',
+);
 const operatorWorkflows = await Promise.all([
   'mirror-published-release.yml',
   'resume-platform-mirror.yml',
@@ -230,7 +234,40 @@ test('a failed mirror resumes from exact accepted artifacts without rebuilding',
   );
   assert.match(resumeMirrorWorkflow, /artifact-ids: \$\{\{ inputs\.candidate_artifact_id \}\}/u);
   assert.match(resumeMirrorWorkflow, /artifact-ids: \$\{\{ inputs\.verification_artifact_id \}\}/u);
-  assert.equal((resumeMirrorWorkflow.match(/run-id: \$\{\{ inputs\.source_run_id \}\}/gu) || []).length, 2);
+  assert.equal((resumeMirrorWorkflow.match(/run-id: \$\{\{ inputs\.source_run_id \}\}/gu) || []).length, 1);
+  assert.match(
+    resumeMirrorWorkflow,
+    /run-id: \$\{\{ inputs\.verification_run_id \|\| inputs\.source_run_id \}\}/u,
+  );
+  assert.match(resumeMirrorWorkflow, /--verification-run-id/u);
+  const provenanceCommandStart = resumeMirrorWorkflow.indexOf(
+    'node .github/scripts/verify-actions-artifact-provenance.mjs'
+  );
+  const provenanceCommandEnd = resumeMirrorWorkflow.indexOf(
+    '--output "$RUNNER_TEMP/state/actions-provenance.json"',
+    provenanceCommandStart
+  );
+  const recoveryCommandStart = resumeMirrorWorkflow.indexOf(
+    'node .github/scripts/validate-platform-artifact-recovery.mjs'
+  );
+  const recoveryCommandEnd = resumeMirrorWorkflow.indexOf(
+    '--output "$RUNNER_TEMP/state/recovery-input.json"',
+    recoveryCommandStart
+  );
+  assert.ok(provenanceCommandStart >= 0 && provenanceCommandEnd > provenanceCommandStart);
+  assert.ok(recoveryCommandStart >= 0 && recoveryCommandEnd > recoveryCommandStart);
+  assert.doesNotMatch(
+    resumeMirrorWorkflow.slice(provenanceCommandStart, provenanceCommandEnd),
+    /--actions-provenance/u,
+  );
+  assert.match(
+    resumeMirrorWorkflow.slice(recoveryCommandStart, recoveryCommandEnd),
+    /--actions-provenance "\$RUNNER_TEMP\/state\/actions-provenance\.json"/u,
+  );
+  assert.match(resumeMirrorWorkflow, /verify-actions-artifact-provenance\.mjs/u);
+  assert.match(resumeMirrorWorkflow, /actions\/artifacts\/\$\{\{ inputs\.candidate_artifact_id \}\}/u);
+  assert.match(resumeMirrorWorkflow, /actions\/artifacts\/\$\{\{ inputs\.verification_artifact_id \}\}/u);
+  assert.match(resumeMirrorWorkflow, /actions\/runs\/\$\{\{ inputs\.verification_run_id \|\| inputs\.source_run_id \}\}/u);
   assert.equal((resumeMirrorWorkflow.match(/github-token: \$\{\{ github\.token \}\}/gu) || []).length, 2);
   assert.match(resumeMirrorWorkflow, /validate-platform-artifact-recovery\.mjs/u);
   assert.match(resumeMirrorWorkflow, /macos_voice_context_v2/u);
@@ -250,6 +287,34 @@ test('a failed mirror resumes from exact accepted artifacts without rebuilding',
     resumeMirrorWorkflow,
     /pnpm install|release:build:ci|electron-forge|notarytool|release-notarize-ci/u,
   );
+});
+
+test('a verifier-only macOS correction reuses one immutable candidate and emits a combined receipt set', () => {
+  const uses = [...reverifyMacBusinessWorkflow.matchAll(/^\s+uses:\s+([^\s#]+)/gmu)]
+    .map((match) => match[1]);
+  for (const value of uses) {
+    assert.match(value, /^[^@]+@[a-f0-9]{40}$/u, `un-pinned reverification action: ${value}`);
+  }
+  assert.match(reverifyMacBusinessWorkflow, /workflow_dispatch:/u);
+  assert.match(reverifyMacBusinessWorkflow, /environment: beta-release/u);
+  assert.match(reverifyMacBusinessWorkflow, /process\.env\.GITHUB_REF!==['"]refs\/heads\/main['"]/u);
+  assert.match(reverifyMacBusinessWorkflow, /candidate_source_sha:/u);
+  assert.match(reverifyMacBusinessWorkflow, /verifier_source_sha:/u);
+  assert.match(reverifyMacBusinessWorkflow, /git merge-base --is-ancestor/u);
+  assert.match(reverifyMacBusinessWorkflow, /docs\/updates\/UPDATE_SERVER\.md/u);
+  assert.match(reverifyMacBusinessWorkflow, /verifier-only recovery changed product or unrelated file/u);
+  assert.match(reverifyMacBusinessWorkflow, /artifact-ids: \$\{\{ inputs\.candidate_artifact_id \}\}/u);
+  assert.match(reverifyMacBusinessWorkflow, /artifact-ids: \$\{\{ inputs\.fixture_verification_artifact_id \}\}/u);
+  assert.equal((reverifyMacBusinessWorkflow.match(/run-id: \$\{\{ inputs\.source_run_id \}\}/gu) || []).length, 2);
+  assert.match(reverifyMacBusinessWorkflow, /--suite macos-live-stepfun-timeline/u);
+  assert.match(reverifyMacBusinessWorkflow, /--head-sha "\$\{\{ inputs\.candidate_source_sha \}\}"/u);
+  assert.match(reverifyMacBusinessWorkflow, /--verifier-head-sha "\$\{\{ inputs\.verifier_source_sha \}\}"/u);
+  assert.match(reverifyMacBusinessWorkflow, /--candidate-manifest "\$RUNNER_TEMP\/mac-final\/evidence\/candidate\.json"/u);
+  assert.match(reverifyMacBusinessWorkflow, /FLOWZERO_VERIFY_STEPFUN_API_KEY: \$\{\{ secrets\.FLOWZERO_STEPFUN_API_KEY \}\}/u);
+  assert.match(reverifyMacBusinessWorkflow, /fixture-verification\/verification\.json/u);
+  assert.match(reverifyMacBusinessWorkflow, /reverified\/live-stepfun-timeline\.json/u);
+  assert.match(reverifyMacBusinessWorkflow, /macos-business-reverification-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u);
+  assert.doesNotMatch(reverifyMacBusinessWorkflow, /release:build:ci|release:notarize:ci|forge:/u);
 });
 
 test('GitHub archive is a presentation layer and does not gate platform promotion', () => {

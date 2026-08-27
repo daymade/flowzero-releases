@@ -18,6 +18,8 @@ export function validatePlatformArtifactRecovery({
   candidate: rawCandidate,
   verifications: rawVerifications,
   sourceRunId,
+  verificationRunId,
+  actionsProvenance,
   candidateArtifactId,
   verificationArtifactId,
   toolkitSha,
@@ -25,11 +27,20 @@ export function validatePlatformArtifactRecovery({
   platform,
 }) {
   assert(/^\d+$/.test(String(sourceRunId || '')), 'source run ID is invalid');
+  assert(/^\d+$/.test(String(verificationRunId || '')), 'verification run ID is invalid');
   assert(/^\d+$/.test(String(candidateArtifactId || '')), 'candidate artifact ID is invalid');
   assert(/^\d+$/.test(String(verificationArtifactId || '')), 'verification artifact ID is invalid');
   assert(/^[a-f0-9]{40}$/.test(toolkitSha || ''), 'recovery toolkit SHA is invalid');
   assert(['stable', 'beta'].includes(channel), 'recovery channel is invalid');
   assert(['macos-arm64', 'windows-x64'].includes(platform), 'recovery platform is invalid');
+  assert(
+    actionsProvenance?.schema === 'flowzero.actions_artifact_provenance.v1'
+    && actionsProvenance.candidate?.run_id === String(sourceRunId)
+    && actionsProvenance.candidate?.artifact_id === String(candidateArtifactId)
+    && actionsProvenance.verification?.run_id === String(verificationRunId)
+    && actionsProvenance.verification?.artifact_id === String(verificationArtifactId),
+    'Actions artifact provenance does not match recovery inputs',
+  );
 
   const candidate = validateCandidateEnvelope(rawCandidate);
   const verifications = validateVerificationSet(rawVerifications, candidate);
@@ -43,8 +54,10 @@ export function validatePlatformArtifactRecovery({
   return {
     schema: RECOVERY_INPUT_SCHEMA,
     source_run_id: String(sourceRunId),
+    verification_run_id: String(verificationRunId),
     candidate_artifact_id: String(candidateArtifactId),
     verification_artifact_id: String(verificationArtifactId),
+    actions_provenance: actionsProvenance,
     verification_suites: verifications.map(receipt => receipt.suite),
     recovery_toolkit_sha: toolkitSha,
     original_release_infrastructure_sha:
@@ -65,6 +78,8 @@ function parseArguments(argv) {
     '--candidate',
     '--verification',
     '--source-run-id',
+    '--verification-run-id',
+    '--actions-provenance',
     '--candidate-artifact-id',
     '--verification-artifact-id',
     '--toolkit-sha',
@@ -106,10 +121,13 @@ export async function main(argv = process.argv.slice(2)) {
   const verifications = await Promise.all(args['--verification'].map(async verificationPath => (
     JSON.parse(await readFile(path.resolve(verificationPath), 'utf8'))
   )));
+  const actionsProvenance = JSON.parse(await readFile(path.resolve(args['--actions-provenance']), 'utf8'));
   const recovery = validatePlatformArtifactRecovery({
     candidate,
     verifications,
     sourceRunId: args['--source-run-id'],
+    verificationRunId: args['--verification-run-id'],
+    actionsProvenance,
     candidateArtifactId: args['--candidate-artifact-id'],
     verificationArtifactId: args['--verification-artifact-id'],
     toolkitSha: args['--toolkit-sha'],

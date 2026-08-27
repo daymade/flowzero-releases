@@ -148,6 +148,7 @@ function macLiveVerification(candidate, overrides = {}) {
     suite: 'macos-live-stepfun-timeline',
     version: candidate.candidate.release.version,
     source_head_sha: candidate.candidate.source.head_sha,
+    verifier_head_sha: candidate.candidate.source.head_sha,
     platform: 'macos-arm64',
     subject: { name: 'Flowzero.dmg', size: 300, sha256: sha('1') },
     evidence: [
@@ -173,11 +174,29 @@ function macLiveVerification(candidate, overrides = {}) {
         history_written: true,
         memory_written: true,
         fts_searchable: true,
+        capture_signal_verified: true,
+        capture_signal_track_source: 'mixed',
+        capture_signal_sample_count: 16000,
+        capture_signal_rms: 0.02,
+        capture_signal_peak: 0.4,
         zero_process_residue: true,
         ...overrides,
       },
     ],
     verified_at: '2026-08-26T00:00:00Z',
+  };
+}
+
+function recoveryProvenance({
+  sourceRunId = '123',
+  verificationRunId = '123',
+  candidateArtifactId = '456',
+  verificationArtifactId = '789',
+} = {}) {
+  return {
+    schema: 'flowzero.actions_artifact_provenance.v1',
+    candidate: { run_id: sourceRunId, artifact_id: candidateArtifactId },
+    verification: { run_id: verificationRunId, artifact_id: verificationArtifactId },
   };
 }
 
@@ -311,6 +330,8 @@ test('binds mirror recovery to one accepted artifact pair and the requested sour
     candidate,
     verifications: [macVerification(candidate)],
     sourceRunId: '123',
+    verificationRunId: '123',
+    actionsProvenance: recoveryProvenance(),
     candidateArtifactId: '456',
     verificationArtifactId: '789',
     toolkitSha: 'c'.repeat(40),
@@ -320,6 +341,7 @@ test('binds mirror recovery to one accepted artifact pair and the requested sour
   assert.equal(recovery.candidate_id, candidate.candidate_id);
   assert.equal(recovery.version, '1.2.3-beta.4');
   assert.equal(recovery.original_release_infrastructure_sha, infraSha);
+  assert.equal(recovery.verification_run_id, '123');
 
   const v2Candidate = macCandidate(intent(), {
     verificationContract: 'macos_voice_context_v2'
@@ -328,6 +350,8 @@ test('binds mirror recovery to one accepted artifact pair and the requested sour
     candidate: v2Candidate,
     verifications: [macVerification(v2Candidate), macLiveVerification(v2Candidate)],
     sourceRunId: '123',
+    verificationRunId: '321',
+    actionsProvenance: recoveryProvenance({ verificationRunId: '321' }),
     candidateArtifactId: '456',
     verificationArtifactId: '789',
     toolkitSha: 'c'.repeat(40),
@@ -338,10 +362,13 @@ test('binds mirror recovery to one accepted artifact pair and the requested sour
     'macos-voice-context',
     'macos-live-stepfun-timeline',
   ]);
+  assert.equal(v2Recovery.verification_run_id, '321');
   assert.throws(() => validatePlatformArtifactRecovery({
     candidate: v2Candidate,
     verifications: [macVerification(v2Candidate)],
     sourceRunId: '123',
+    verificationRunId: '123',
+    actionsProvenance: recoveryProvenance(),
     candidateArtifactId: '456',
     verificationArtifactId: '789',
     toolkitSha: 'c'.repeat(40),
@@ -358,6 +385,8 @@ test('binds mirror recovery to one accepted artifact pair and the requested sour
       candidate,
       verifications: [macVerification(candidate)],
       sourceRunId: '123',
+      verificationRunId: '123',
+      actionsProvenance: recoveryProvenance(),
       candidateArtifactId: '456',
       verificationArtifactId: '789',
       toolkitSha: 'c'.repeat(40),
@@ -607,14 +636,16 @@ test('macOS v2 requires distinct fixture and live StepFun verification receipts'
     }), /live StepFun timeline evidence is incomplete/u);
   }
 
-  const transcriptLeak = macLiveVerification(candidate);
-  transcriptLeak.evidence[1].text = 'must not be public';
-  assert.throws(() => buildPlatformCheckpoint({
-    phase: 'platform_verified',
-    candidate,
-    parent: built,
-    verifications: [fixture, transcriptLeak],
-  }), /transcript-bearing key/u);
+  for (const key of ['text', 'transcript', 'body']) {
+    const transcriptLeak = macLiveVerification(candidate);
+    transcriptLeak.evidence[1][key] = 'must not be public';
+    assert.throws(() => buildPlatformCheckpoint({
+      phase: 'platform_verified',
+      candidate,
+      parent: built,
+      verifications: [fixture, transcriptLeak],
+    }), /unsupported key/u);
+  }
 });
 
 test('validates the exact Windows Squirrel candidate and timestamped installer receipt', () => {
