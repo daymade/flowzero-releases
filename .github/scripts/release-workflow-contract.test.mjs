@@ -153,6 +153,10 @@ test('the release-blocking Mac verifier is the packaged local multi-speaker busi
   assert.doesNotMatch(fixtureAcceptance, /--suite macos-live-stepfun-timeline/u);
   assert.match(liveAcceptance, /build-meeting-e2e-fixtures\.cjs/u);
   assert.match(liveAcceptance, /--suite macos-live-stepfun-timeline/u);
+  assert.match(liveAcceptance, /id: live-stepfun/u);
+  assert.match(liveAcceptance, /--failure-output "\$RUNNER_TEMP\/mac-verification\/live-stepfun-timeline\.failure\.json"/u);
+  assert.match(liveAcceptance, /always\(\) && steps\.live-stepfun\.outcome == 'failure'/u);
+  assert.match(liveAcceptance, /macos-live-stepfun-diagnostic-/u);
   assert.doesNotMatch(liveAcceptance, /--suite macos-voice-context/u);
   assert.match(
     liveAcceptance,
@@ -310,6 +314,10 @@ test('a verifier-only macOS correction reuses one immutable candidate and emits 
   assert.match(reverifyMacBusinessWorkflow, /artifact-ids: \$\{\{ inputs\.fixture_verification_artifact_id \}\}/u);
   assert.equal((reverifyMacBusinessWorkflow.match(/run-id: \$\{\{ inputs\.source_run_id \}\}/gu) || []).length, 2);
   assert.match(reverifyMacBusinessWorkflow, /--suite macos-live-stepfun-timeline/u);
+  assert.match(reverifyMacBusinessWorkflow, /id: live-stepfun/u);
+  assert.match(reverifyMacBusinessWorkflow, /--failure-output "\$RUNNER_TEMP\/reverified\/live-stepfun-timeline\.failure\.json"/u);
+  assert.match(reverifyMacBusinessWorkflow, /always\(\) && steps\.live-stepfun\.outcome == 'failure'/u);
+  assert.match(reverifyMacBusinessWorkflow, /macos-live-stepfun-diagnostic-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u);
   assert.match(reverifyMacBusinessWorkflow, /--head-sha "\$\{\{ inputs\.candidate_source_sha \}\}"/u);
   assert.match(reverifyMacBusinessWorkflow, /--verifier-head-sha "\$\{\{ inputs\.verifier_source_sha \}\}"/u);
   assert.match(reverifyMacBusinessWorkflow, /--candidate-manifest "\$RUNNER_TEMP\/mac-final\/evidence\/candidate\.json"/u);

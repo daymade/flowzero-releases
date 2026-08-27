@@ -503,6 +503,7 @@ jobs:
           path: ${{ runner.temp }}/mac-final
 
       - name: Prove live StepFun timestamps reach packaged pyannote
+        id: live-stepfun
         run: >-
           pnpm run release:verify:ci --
           --suite macos-live-stepfun-timeline
@@ -511,8 +512,18 @@ jobs:
           --app-path "apps/desktop/out/release-acceptance/Flowzero.app"
           --subject-file "$RUNNER_TEMP/mac-final/artifacts/Flowzero-${{ needs.prepare.outputs.version }}-arm64.dmg"
           --output "$RUNNER_TEMP/mac-verification/live-stepfun-timeline.json"
+          --failure-output "$RUNNER_TEMP/mac-verification/live-stepfun-timeline.failure.json"
         env:
           FLOWZERO_VERIFY_STEPFUN_API_KEY: ${{ secrets.FLOWZERO_STEPFUN_API_KEY }}
+
+      - name: Preserve failed live StepFun diagnostic
+        if: ${{ always() && steps.live-stepfun.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-live-stepfun-diagnostic-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mac-verification/live-stepfun-timeline.failure.json
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Upload live StepFun Mac acceptance receipt
         id: upload-live

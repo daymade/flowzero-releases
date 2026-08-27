@@ -122,6 +122,7 @@ jobs:
           path: ${{ runner.temp }}/fixture-verification
 
       - name: Reverify live StepFun on the same final candidate
+        id: live-stepfun
         run: >-
           pnpm run release:verify:ci --
           --suite macos-live-stepfun-timeline
@@ -132,8 +133,18 @@ jobs:
           --app-path "$RUNNER_TEMP/reverify/Flowzero.app"
           --subject-file "$RUNNER_TEMP/mac-final/artifacts/Flowzero-${{ inputs.version }}-arm64.dmg"
           --output "$RUNNER_TEMP/reverified/live-stepfun-timeline.json"
+          --failure-output "$RUNNER_TEMP/reverified/live-stepfun-timeline.failure.json"
         env:
           FLOWZERO_VERIFY_STEPFUN_API_KEY: ${{ secrets.FLOWZERO_STEPFUN_API_KEY }}
+
+      - name: Preserve failed live StepFun diagnostic
+        if: ${{ always() && steps.live-stepfun.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-live-stepfun-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/reverified/live-stepfun-timeline.failure.json
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Assemble exact two-receipt Mac verification set
         shell: bash
