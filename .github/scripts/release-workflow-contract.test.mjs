@@ -343,6 +343,7 @@ test('GitHub archive is a presentation layer and does not gate platform promotio
   assert.doesNotMatch(macPromote, /archive-release/u);
   assert.doesNotMatch(windowsPromote, /archive-release/u);
   assert.match(archive, /permissions:[\s\S]*contents: write/u);
+  assert.match(archive, /permissions:[\s\S]*attestations: read/u);
   assert.doesNotMatch(jobBlock('build-macos'), /contents: write/u);
   assert.doesNotMatch(jobBlock('accept-macos-fixture'), /contents: write/u);
   assert.doesNotMatch(jobBlock('accept-macos-live-stepfun'), /contents: write/u);
