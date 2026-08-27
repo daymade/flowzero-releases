@@ -76,11 +76,32 @@ function expectedArchiveAssets(manifest, assetRoot, manifestPath) {
   return expected;
 }
 
-function getRelease(repository, tag) {
-  const result = run('gh', ['api', `repos/${repository}/releases/tags/${tag}`], { allowFailure: true });
+function parseGitHubJson(result, label) {
+  try {
+    return JSON.parse(result.stdout);
+  } catch (error) {
+    throw new Error(`${label} did not return JSON: ${error.message}`);
+  }
+}
+
+export function getReleaseById(repository, releaseId, { runCommand = run } = {}) {
+  assert(Number.isInteger(releaseId) && releaseId > 0, 'GitHub release ID is invalid');
+  const result = runCommand('gh', ['api', `repos/${repository}/releases/${releaseId}`]);
+  return parseGitHubJson(result, `GitHub release ${releaseId}`);
+}
+
+export function getRelease(repository, tag, { runCommand = run } = {}) {
+  const result = runCommand('gh', ['api', `repos/${repository}/releases/tags/${tag}`], { allowFailure: true });
   if (result.status === 0) return JSON.parse(result.stdout);
   const detail = `${result.stderr || ''}\n${result.stdout || ''}`;
-  if (/HTTP 404|Not Found/iu.test(detail)) return null;
+  if (/HTTP 404|Not Found/iu.test(detail)) {
+    const listResult = runCommand('gh', ['api', `repos/${repository}/releases?per_page=100`]);
+    const releases = parseGitHubJson(listResult, 'GitHub release list');
+    assert(Array.isArray(releases), 'GitHub release list is invalid');
+    const matches = releases.filter((entry) => entry?.tag_name === tag);
+    assert(matches.length <= 1, `multiple GitHub releases found for ${tag}`);
+    return matches[0] || null;
+  }
   throw new Error(`cannot query release ${tag}: ${detail.trim()}`);
 }
 
@@ -204,13 +225,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       }
       run('gh', ['release', 'upload', tag, asset.filePath, '--repo', repository]);
     }
-    release = getRelease(repository, tag);
+    release = getReleaseById(repository, release.id);
     assertReleaseIdentity(release, manifest, { expectedDraft: true, expectedImmutable: false });
     draftFingerprint = verifyReleaseAssets(release, expected);
     ghJson([
       'api', '--method', 'PATCH', `repos/${repository}/releases/${release.id}`, '--input', '-',
     ], { input: JSON.stringify({ draft: false }) });
-    release = getRelease(repository, tag);
+    release = getReleaseById(repository, release.id);
   }
   assertReleaseIdentity(release, manifest, { expectedDraft: false, expectedImmutable: true });
   const liveFingerprint = verifyReleaseAssets(release, expected);

@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   assertImmutableReleasePolicy,
   assertReleaseIdentity,
+  getRelease,
+  getReleaseById,
   verifyReleaseAssets,
 } from './archive-release.mjs';
 
@@ -52,4 +54,29 @@ test('archive assets must be uploaded and match their frozen size and digest', (
     }, expected),
     /not uploaded/u,
   );
+});
+
+test('archive resume finds an authenticated draft when the tag endpoint hides it', () => {
+  const draft = { id: 42, tag_name: 'v1.2.3-beta.4', draft: true };
+  const calls = [];
+  const runCommand = (_command, args) => {
+    calls.push(args);
+    if (args[1].includes('/releases/tags/')) {
+      return { status: 1, stdout: '', stderr: 'HTTP 404: Not Found' };
+    }
+    return { status: 0, stdout: JSON.stringify([draft]), stderr: '' };
+  };
+
+  assert.deepEqual(getRelease('daymade/flowzero-releases', draft.tag_name, { runCommand }), draft);
+  assert.equal(calls[1][1], 'repos/daymade/flowzero-releases/releases?per_page=100');
+});
+
+test('archive refreshes an existing draft by immutable release ID', () => {
+  const draft = { id: 42, tag_name: 'v1.2.3-beta.4', draft: true };
+  const runCommand = (_command, args) => {
+    assert.equal(args[1], 'repos/daymade/flowzero-releases/releases/42');
+    return { status: 0, stdout: JSON.stringify(draft), stderr: '' };
+  };
+
+  assert.deepEqual(getReleaseById('daymade/flowzero-releases', 42, { runCommand }), draft);
 });
