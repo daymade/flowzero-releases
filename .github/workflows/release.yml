@@ -522,7 +522,7 @@ jobs:
         with:
           name: macos-live-stepfun-diagnostic-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/mac-verification/live-stepfun-timeline.failure.json
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
 
       - name: Upload live StepFun Mac acceptance receipt

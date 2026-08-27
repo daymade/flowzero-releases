@@ -157,6 +157,7 @@ test('the release-blocking Mac verifier is the packaged local multi-speaker busi
   assert.match(liveAcceptance, /--failure-output "\$RUNNER_TEMP\/mac-verification\/live-stepfun-timeline\.failure\.json"/u);
   assert.match(liveAcceptance, /always\(\) && steps\.live-stepfun\.outcome == 'failure'/u);
   assert.match(liveAcceptance, /macos-live-stepfun-diagnostic-/u);
+  assert.match(liveAcceptance, /live-stepfun-timeline\.failure\.json[\s\S]*if-no-files-found: error/u);
   assert.doesNotMatch(liveAcceptance, /--suite macos-voice-context/u);
   assert.match(
     liveAcceptance,
@@ -318,6 +319,7 @@ test('a verifier-only macOS correction reuses one immutable candidate and emits 
   assert.match(reverifyMacBusinessWorkflow, /--failure-output "\$RUNNER_TEMP\/reverified\/live-stepfun-timeline\.failure\.json"/u);
   assert.match(reverifyMacBusinessWorkflow, /always\(\) && steps\.live-stepfun\.outcome == 'failure'/u);
   assert.match(reverifyMacBusinessWorkflow, /macos-live-stepfun-diagnostic-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u);
+  assert.match(reverifyMacBusinessWorkflow, /live-stepfun-timeline\.failure\.json[\s\S]*if-no-files-found: error/u);
   assert.match(reverifyMacBusinessWorkflow, /--head-sha "\$\{\{ inputs\.candidate_source_sha \}\}"/u);
   assert.match(reverifyMacBusinessWorkflow, /--verifier-head-sha "\$\{\{ inputs\.verifier_source_sha \}\}"/u);
   assert.match(reverifyMacBusinessWorkflow, /--candidate-manifest "\$RUNNER_TEMP\/mac-final\/evidence\/candidate\.json"/u);
