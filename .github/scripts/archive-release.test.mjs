@@ -58,17 +58,46 @@ test('archive assets must be uploaded and match their frozen size and digest', (
 
 test('archive resume finds an authenticated draft when the tag endpoint hides it', () => {
   const draft = { id: 42, tag_name: 'v1.2.3-beta.4', draft: true };
+  const firstPage = Array.from({ length: 100 }, (_, index) => ({
+    id: index + 1,
+    tag_name: `v0.0.${index + 1}`,
+    draft: false,
+  }));
   const calls = [];
   const runCommand = (_command, args) => {
     calls.push(args);
     if (args[1].includes('/releases/tags/')) {
       return { status: 1, stdout: '', stderr: 'HTTP 404: Not Found' };
     }
-    return { status: 0, stdout: JSON.stringify([draft]), stderr: '' };
+    return { status: 0, stdout: JSON.stringify([firstPage, [draft]]), stderr: '' };
   };
 
   assert.deepEqual(getRelease('daymade/flowzero-releases', draft.tag_name, { runCommand }), draft);
-  assert.equal(calls[1][1], 'repos/daymade/flowzero-releases/releases?per_page=100');
+  assert.deepEqual(calls[1], [
+    'api', '--paginate', '--slurp', 'repos/daymade/flowzero-releases/releases?per_page=100',
+  ]);
+});
+
+test('archive resume rejects duplicate drafts split across release pages', () => {
+  const tag = 'v1.2.3-beta.4';
+  const runCommand = (_command, args) => {
+    if (args[1].includes('/releases/tags/')) {
+      return { status: 1, stdout: '', stderr: 'HTTP 404: Not Found' };
+    }
+    return {
+      status: 0,
+      stdout: JSON.stringify([
+        [{ id: 41, tag_name: tag, draft: true }],
+        [{ id: 42, tag_name: tag, draft: true }],
+      ]),
+      stderr: '',
+    };
+  };
+
+  assert.throws(
+    () => getRelease('daymade/flowzero-releases', tag, { runCommand }),
+    /multiple GitHub releases found/u,
+  );
 });
 
 test('archive refreshes an existing draft by immutable release ID', () => {

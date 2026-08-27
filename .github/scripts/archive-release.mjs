@@ -95,9 +95,15 @@ export function getRelease(repository, tag, { runCommand = run } = {}) {
   if (result.status === 0) return JSON.parse(result.stdout);
   const detail = `${result.stderr || ''}\n${result.stdout || ''}`;
   if (/HTTP 404|Not Found/iu.test(detail)) {
-    const listResult = runCommand('gh', ['api', `repos/${repository}/releases?per_page=100`]);
-    const releases = parseGitHubJson(listResult, 'GitHub release list');
-    assert(Array.isArray(releases), 'GitHub release list is invalid');
+    const listResult = runCommand('gh', [
+      'api', '--paginate', '--slurp', `repos/${repository}/releases?per_page=100`,
+    ]);
+    const pages = parseGitHubJson(listResult, 'GitHub release list');
+    assert(
+      Array.isArray(pages) && pages.every((page) => Array.isArray(page)),
+      'GitHub release list is invalid',
+    );
+    const releases = pages.flat();
     const matches = releases.filter((entry) => entry?.tag_name === tag);
     assert(matches.length <= 1, `multiple GitHub releases found for ${tag}`);
     return matches[0] || null;
