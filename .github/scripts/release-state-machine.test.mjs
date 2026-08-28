@@ -663,6 +663,49 @@ test('macOS v2 requires distinct fixture and live StepFun verification receipts'
     parent: built,
     verifications: [fixture, unsupportedRuntimeEvidence],
   }), /runtime dependency evidence contains unsupported key/u);
+
+  for (const [field, invalidValue] of [
+    ['package_count', 0],
+    ['package_count', -1],
+    ['package_count', 1.5],
+    ['package_count', '276'],
+    ['package_count', Number.MAX_SAFE_INTEGER + 1],
+    ['edge_count', 0],
+    ['edge_count', -1],
+    ['edge_count', 1.5],
+    ['edge_count', '462'],
+    ['edge_count', Number.MAX_SAFE_INTEGER + 1],
+    ['https_proxy_connect_path', false],
+    ['status', 'fail'],
+  ]) {
+    assert.throws(() => buildPlatformCheckpoint({
+      phase: 'platform_verified',
+      candidate,
+      parent: built,
+      verifications: [
+        fixture,
+        withRuntimeDependencyGraph(macLiveVerification(candidate), { [field]: invalidValue }),
+      ],
+    }), /runtime dependency evidence is incomplete/u);
+  }
+
+  const duplicateRuntimeEvidence = withRuntimeDependencyGraph(macLiveVerification(candidate));
+  duplicateRuntimeEvidence.evidence.splice(2, 0, { ...duplicateRuntimeEvidence.evidence[1] });
+  assert.throws(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate,
+    parent: built,
+    verifications: [fixture, duplicateRuntimeEvidence],
+  }), /live StepFun verification evidence set is invalid/u);
+
+  const unknownRuntimeEvidence = macLiveVerification(candidate);
+  unknownRuntimeEvidence.evidence.splice(1, 0, { kind: 'unknown_runtime_evidence', status: 'pass' });
+  assert.throws(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate,
+    parent: built,
+    verifications: [fixture, unknownRuntimeEvidence],
+  }), /live StepFun verification evidence kinds are invalid/u);
   assert.throws(() => buildPlatformCheckpoint({
     phase: 'platform_verified',
     candidate,
