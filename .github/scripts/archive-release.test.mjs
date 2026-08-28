@@ -191,6 +191,44 @@ test('structured zero-attestation responses retry without upload or publication 
   assert.equal(calls.some(({ args }) => args.includes('upload') || args.includes('PATCH')), false);
 });
 
+test('a just-published release attestation 404 retries as propagation pending', async (t) => {
+  for (const detail of ['gh: Not Found (HTTP 404)', 'HTTP 404: Not Found']) {
+    await t.test(detail, async () => {
+      const calls = [];
+      const sleeps = [];
+      let clock = 0;
+      const results = [
+        { status: 1, stdout: '', stderr: detail },
+        { status: 0, stdout: githubAttestationResponse, stderr: '' },
+        { status: 0, stdout: 'verified\n', stderr: '' },
+      ];
+      const result = await verifyReleaseAttestation(releaseRepository, releaseTag, {
+        subjectSha: releaseSubjectSha,
+        runCommand: (command, args, options) => {
+          calls.push({ command, args, options });
+          return results.shift();
+        },
+        sleep: async (delayMs) => {
+          sleeps.push(delayMs);
+          clock += delayMs;
+        },
+        now: () => clock,
+        retryDelaysMs: [5],
+        writeStatus: () => {},
+      });
+
+      assert.deepEqual(result, { attempts: 2, elapsed_ms: 5 });
+      assert.deepEqual(sleeps, [5]);
+      assert.deepEqual(calls.map(({ args }) => args), [
+        ['api', releaseAttestationPath],
+        ['api', releaseAttestationPath],
+        ['release', 'verify', releaseTag, '--repo', releaseRepository],
+      ]);
+      assert.equal(calls.some(({ args }) => args.includes('upload') || args.includes('PATCH')), false);
+    });
+  }
+});
+
 test('an existing same-SHA attestation retries only the exact filtered-tag absence', async () => {
   let clock = 0;
   const sleeps = [];
@@ -216,7 +254,11 @@ test('an existing same-SHA attestation retries only the exact filtered-tag absen
 });
 
 test('structured attestation query errors fail immediately and preserve the original error', async (t) => {
-  for (const detail of ['HTTP 403: Resource not accessible by integration', 'unexpected EOF']) {
+  for (const detail of [
+    'HTTP 403: Resource not accessible by integration',
+    'HTTP 404: Repository not found',
+    'unexpected EOF',
+  ]) {
     await t.test(detail, async () => {
       let calls = 0;
       let sleeps = 0;

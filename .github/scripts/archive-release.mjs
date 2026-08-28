@@ -123,6 +123,12 @@ function isPendingFilteredReleaseAttestation(detail, repository, tag) {
   return exactPattern.test(String(detail || '').trim());
 }
 
+function isPendingReleaseAttestationQuery(detail) {
+  const normalized = String(detail || '').trim();
+  return normalized === 'gh: Not Found (HTTP 404)'
+    || normalized === 'HTTP 404: Not Found';
+}
+
 function createReleaseAttestationTimeoutError(tag, attempts, elapsedMs, lastDetail) {
   return new Error([
     `release attestation verification timed out for ${tag}`,
@@ -171,17 +177,25 @@ export async function verifyReleaseAttestation(repository, tag, {
       }
       throw new Error(`gh release attestation query failed: ${error?.message || String(error)}`);
     }
+    let pending = false;
     if (queryResult.status !== 0) {
       const detail = readCommandFailure(queryResult);
-      throw new Error(`gh release attestation query failed: ${detail || `exit ${queryResult.status}`}`);
-    }
-    const queryPayload = parseGitHubJson(queryResult, 'GitHub release attestation query');
-    assert(Array.isArray(queryPayload?.attestations), 'GitHub release attestation query is invalid');
-    const githubAttestations = queryPayload.attestations.filter((entry) => entry?.initiator === 'github');
-    let pending = githubAttestations.length === 0;
-    if (pending) {
-      lastDetail = 'release attestation query returned zero github-initiated attestations';
+      if (!isPendingReleaseAttestationQuery(detail)) {
+        throw new Error(`gh release attestation query failed: ${detail || `exit ${queryResult.status}`}`);
+      }
+      lastDetail = detail;
+      pending = true;
     } else {
+      const queryPayload = parseGitHubJson(queryResult, 'GitHub release attestation query');
+      assert(Array.isArray(queryPayload?.attestations), 'GitHub release attestation query is invalid');
+      const githubAttestations = queryPayload.attestations.filter((entry) => entry?.initiator === 'github');
+      pending = githubAttestations.length === 0;
+      if (pending) {
+        lastDetail = 'release attestation query returned zero github-initiated attestations';
+      }
+    }
+
+    if (!pending) {
       const elapsedBeforeVerify = Math.max(0, now() - startedAt);
       if (elapsedBeforeVerify >= timeoutMs) {
         throw createReleaseAttestationTimeoutError(tag, attempts, elapsedBeforeVerify, lastDetail);
