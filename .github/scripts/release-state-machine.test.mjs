@@ -615,12 +615,37 @@ test('macOS v2 requires distinct fixture and live StepFun verification receipts'
     parent: built,
     verifications: [fixture, live],
   }));
-  assert.doesNotThrow(() => buildPlatformCheckpoint({
+  const liveWithRuntimeGraph = withRuntimeDependencyGraph(macLiveVerification(candidate));
+  const verifiedWithRuntimeGraph = buildPlatformCheckpoint({
     phase: 'platform_verified',
     candidate,
     parent: built,
-    verifications: [fixture, withRuntimeDependencyGraph(macLiveVerification(candidate))],
-  }));
+    verifications: [fixture, liveWithRuntimeGraph],
+  });
+  const expectedRuntimeGraphEvidence = {
+    kind: 'runtime_dependency_graph',
+    status: 'pass',
+    package_count: 276,
+    edge_count: 462,
+    http_proxy_round_trip: true,
+    https_proxy_connect_path: true,
+  };
+  const verifiedLiveEvidence = verifiedWithRuntimeGraph.checkpoint.verifications
+    .find(receipt => receipt.suite === 'macos-live-stepfun-timeline')
+    .evidence;
+  assert.deepEqual(verifiedLiveEvidence[1], expectedRuntimeGraphEvidence);
+
+  const mirroredWithRuntimeGraph = buildPlatformCheckpoint({
+    phase: 'mirrored',
+    candidate,
+    parent: verifiedWithRuntimeGraph,
+    verifications: [fixture, liveWithRuntimeGraph],
+    mirrorReceipt: mirrorReceipt(candidate),
+  });
+  const mirroredLiveEvidence = mirroredWithRuntimeGraph.checkpoint.verifications
+    .find(receipt => receipt.suite === 'macos-live-stepfun-timeline')
+    .evidence;
+  assert.deepEqual(mirroredLiveEvidence[1], expectedRuntimeGraphEvidence);
   assert.throws(() => buildPlatformCheckpoint({
     phase: 'platform_verified',
     candidate,
