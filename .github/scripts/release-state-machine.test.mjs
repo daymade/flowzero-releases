@@ -187,6 +187,19 @@ function macLiveVerification(candidate, overrides = {}) {
   };
 }
 
+function withRuntimeDependencyGraph(receipt, overrides = {}) {
+  receipt.evidence.splice(1, 0, {
+    kind: 'runtime_dependency_graph',
+    status: 'pass',
+    package_count: 276,
+    edge_count: 462,
+    http_proxy_round_trip: true,
+    https_proxy_connect_path: true,
+    ...overrides,
+  });
+  return receipt;
+}
+
 function recoveryProvenance({
   sourceRunId = '123',
   verificationRunId = '123',
@@ -602,6 +615,29 @@ test('macOS v2 requires distinct fixture and live StepFun verification receipts'
     parent: built,
     verifications: [fixture, live],
   }));
+  assert.doesNotThrow(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate,
+    parent: built,
+    verifications: [fixture, withRuntimeDependencyGraph(macLiveVerification(candidate))],
+  }));
+  assert.throws(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate,
+    parent: built,
+    verifications: [
+      fixture,
+      withRuntimeDependencyGraph(macLiveVerification(candidate), { http_proxy_round_trip: false }),
+    ],
+  }), /runtime dependency evidence is incomplete/u);
+  const unsupportedRuntimeEvidence = withRuntimeDependencyGraph(macLiveVerification(candidate));
+  unsupportedRuntimeEvidence.evidence[1].unexpected = true;
+  assert.throws(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate,
+    parent: built,
+    verifications: [fixture, unsupportedRuntimeEvidence],
+  }), /runtime dependency evidence contains unsupported key/u);
   assert.throws(() => buildPlatformCheckpoint({
     phase: 'platform_verified',
     candidate,

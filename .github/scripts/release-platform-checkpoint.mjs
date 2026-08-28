@@ -99,6 +99,14 @@ function projectLiveStepfunVerificationReceipt(receipt) {
   ]);
   const subjectKeys = new Set(['name', 'size', 'sha256']);
   const structureKeys = new Set(['kind', 'status']);
+  const runtimeGraphKeys = new Set([
+    'kind',
+    'status',
+    'package_count',
+    'edge_count',
+    'http_proxy_round_trip',
+    'https_proxy_connect_path',
+  ]);
   const liveKeys = new Set([
     'kind',
     'status',
@@ -134,11 +142,33 @@ function projectLiveStepfunVerificationReceipt(receipt) {
     new Set(['candidate_id']),
   );
   assertExactKeys(receipt.subject, subjectKeys, 'live StepFun verification subject');
-  assert(Array.isArray(receipt.evidence) && receipt.evidence.length === 2, 'live StepFun verification evidence set is invalid');
+  assert(
+    Array.isArray(receipt.evidence) && [2, 3].includes(receipt.evidence.length),
+    'live StepFun verification evidence set is invalid',
+  );
   const structureRows = receipt.evidence.filter((entry) => entry?.kind === 'macos_structure');
+  const runtimeGraphRows = receipt.evidence.filter((entry) => entry?.kind === 'runtime_dependency_graph');
   const liveRows = receipt.evidence.filter((entry) => entry?.kind === 'packaged_live_stepfun_timeline');
-  assert(structureRows.length === 1 && liveRows.length === 1, 'live StepFun verification evidence kinds are invalid');
+  assert(
+    structureRows.length === 1
+      && liveRows.length === 1
+      && runtimeGraphRows.length === receipt.evidence.length - 2,
+    'live StepFun verification evidence kinds are invalid',
+  );
   assertExactKeys(structureRows[0], structureKeys, 'live StepFun structure evidence');
+  if (runtimeGraphRows.length === 1) {
+    assertExactKeys(runtimeGraphRows[0], runtimeGraphKeys, 'live StepFun runtime dependency evidence');
+    assert(
+      runtimeGraphRows[0].status === 'pass'
+        && Number.isSafeInteger(runtimeGraphRows[0].package_count)
+        && runtimeGraphRows[0].package_count > 0
+        && Number.isSafeInteger(runtimeGraphRows[0].edge_count)
+        && runtimeGraphRows[0].edge_count > 0
+        && runtimeGraphRows[0].http_proxy_round_trip === true
+        && runtimeGraphRows[0].https_proxy_connect_path === true,
+      'live StepFun runtime dependency evidence is incomplete',
+    );
+  }
   assertExactKeys(liveRows[0], liveKeys, 'live StepFun business evidence');
   const projected = {
     schema: receipt.schema,
@@ -156,6 +186,9 @@ function projectLiveStepfunVerificationReceipt(receipt) {
     },
     evidence: [
       { kind: structureRows[0].kind, status: structureRows[0].status },
+      ...(runtimeGraphRows.length === 1
+        ? [Object.fromEntries([...runtimeGraphKeys].map((key) => [key, runtimeGraphRows[0][key]]))]
+        : []),
       Object.fromEntries([...liveKeys].map((key) => [key, liveRows[0][key]])),
     ],
     verified_at: receipt.verified_at,

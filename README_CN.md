@@ -112,6 +112,7 @@ https://github.com/daymade/flowzero-releases/issues
 - 发布版本由 GitHub Actions 构建。
 - 发布产物由 CI 流程上传。
 - 每个平台的 candidate 都经过内容寻址与原生验收，再以 create-only 写入 R2 和北京 OSS，并用服务端 checksum/metadata、公开 HEAD 和 1-byte range 证明。
+- macOS 业务回执会保留包结构与产品旅程证据；verifier 产出运行时依赖图证据时，checkpoint 会严格校验并保留该行，同时兼容早期 v2 回执。
 - 平台只有在自己的 R2 pointer CAS 和更新服务/origin canary 通过后才对客户端可见；GitHub archive 随后异步创建，不阻塞另一平台。
 - 短期 CAS 续跑使用精确 Actions state artifact；长期恢复使用不可变 R2 checkpoint；镜像对象缺失或历史回滚则通过 `Repair or Roll Back Published Platform` 从 GitHub archive manifest 精确修复。
 - 最终公证后的 macOS ZIP 会先生成 SHA-512 完整性 sidecar；客户端从更新服务读取当前通道元数据，再从镜像流式下载版本化 ZIP。

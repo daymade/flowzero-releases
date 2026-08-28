@@ -116,6 +116,7 @@ https://github.com/daymade/flowzero-releases/issues
 - Releases are built by GitHub Actions.
 - Published artifacts are uploaded from CI jobs.
 - Each requested platform is content-addressed, natively verified, written create-only to R2 and Beijing OSS, and proven by server checksum/metadata plus public HEAD and a one-byte range probe.
+- macOS business receipts preserve packaged structure and product-journey evidence; when the verifier emits runtime-dependency-graph evidence, the checkpoint validates and preserves that row while remaining compatible with earlier v2 receipts.
 - A platform becomes visible to clients only after its own R2 pointer CAS and update-server/origin canary. GitHub archive creation runs afterward and never gates another platform.
 - Short-term CAS replay uses the exact Actions state artifact; long-term recovery uses the immutable R2 checkpoint; missing mirror objects or historical rollback use the exact GitHub archive manifest through `Repair or Roll Back Published Platform`.
 - The final notarized macOS ZIP receives a generated SHA-512 integrity sidecar before mirroring; clients consume channel metadata from the update service and stream the versioned ZIP from the mirror.
