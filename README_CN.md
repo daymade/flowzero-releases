@@ -21,7 +21,7 @@
 - 已发布版本的标签和二进制归档在这里维护。主动撤回的版本会从分发链移除，并永久记录在[版本撤回 tombstone 权威表](.github/release-tombstones.json)。
 - 普通下载和自动更新使用当前通道明确选择的 Flowzero 发布源；发布流程会在正式发布前把同一份不可变产物写入全球 R2 镜像和北京 OSS 镜像。
 - macOS 与 Windows 分别经过 candidate、平台验收、双镜像、R2 平台 pointer CAS 和用户可见 canary；一个平台保留旧版本不会阻塞另一个平台。Vercel 更新服务分别读取两个平台 pointer，再适配现有更新协议。
-- GitHub Release 是异步 immutable archive；archive 失败不会回滚已经通过 canary 的平台。发布会先验证精确 immutable 资产集合，再只为 GitHub release attestation 的可见性等待最多两分钟；若该归档步骤仍失败，重跑只恢复验证，不会再次上传或发布。
+- GitHub Release 是异步 immutable archive；archive 失败不会回滚已经通过 canary 的平台。发布会先验证精确 immutable 资产集合，再按 [`.github/scripts/archive-release.mjs`](.github/scripts/archive-release.mjs) 的 canonical matcher/backoff 有界等待 attestation；发布后受控 404 或空 attestation 集合保持 pending，其他查询错误立即失败。若归档步骤仍失败，重跑只恢复验证，不会再次上传或发布。
 - 构建流程通过 GitHub Actions 执行。
 - 源码位于私有仓库中维护。
 
