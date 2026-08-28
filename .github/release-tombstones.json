@@ -20,6 +20,31 @@
       "tag": "v0.1.2-beta.7",
       "withdrawn_on": "2026-07-17",
       "reason": "internal_test_release_withdrawn"
+    },
+    {
+      "tag": "v0.1.2-beta.20",
+      "withdrawn_on": "2026-08-28",
+      "reason": "internal_test_release_withdrawn"
+    },
+    {
+      "tag": "v0.1.2-beta.21",
+      "withdrawn_on": "2026-08-28",
+      "reason": "internal_test_release_withdrawn"
+    },
+    {
+      "tag": "v0.1.2-beta.24",
+      "withdrawn_on": "2026-08-28",
+      "reason": "internal_test_release_withdrawn"
+    },
+    {
+      "tag": "v0.1.2-beta.26",
+      "withdrawn_on": "2026-08-28",
+      "reason": "internal_test_release_withdrawn"
+    },
+    {
+      "tag": "v0.1.2-beta.27",
+      "withdrawn_on": "2026-08-28",
+      "reason": "internal_test_release_withdrawn"
     }
   ]
 }
