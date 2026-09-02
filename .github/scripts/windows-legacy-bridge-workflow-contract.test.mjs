@@ -31,6 +31,7 @@ test('qualification hold has an explicit Windows-only DAG and pinned external ac
   assert.match(holdWorkflow, /--bridge-version/u);
   assert.match(holdWorkflow, /windows-2025/u);
   assert.doesNotMatch(holdWorkflow, /macos-arm64/u);
+  assert.match(jobBlock(holdWorkflow, 'prepare-hold-intent'), /needs: powershell-signing-evidence-preflight/u);
   assert.match(jobBlock(holdWorkflow, 'build-bridge'), /needs: prepare-hold-intent/u);
   assert.match(jobBlock(holdWorkflow, 'accept-bridge'), /needs: \[prepare-hold-intent, build-bridge\]/u);
   assert.match(jobBlock(holdWorkflow, 'mirror-to-hold'), /needs: \[prepare-hold-intent, build-bridge, accept-bridge\]/u);
@@ -96,7 +97,12 @@ test('invalid shared source fails before any immutable tag reservation write', (
 
 test('hold workflow delegates build and verification to exactly the canonical source entrypoints', () => {
   assert.equal((holdWorkflow.match(/pnpm run release:build:windows-legacy-bridge:ci --/gu) || []).length, 1);
-  assert.equal((holdWorkflow.match(/pnpm run release:verify:windows-legacy-bridge:ci --/gu) || []).length, 1);
+  assert.equal((holdWorkflow.match(/pnpm run release:verify:windows-legacy-bridge:ci --/gu) || []).length, 2);
+  const preflight = jobBlock(holdWorkflow, 'powershell-signing-evidence-preflight');
+  assert.match(preflight, /runs-on: windows-2025/u);
+  assert.match(preflight, /before any immutable reservation/u);
+  assert.match(preflight, /--mode powershell-signing-probe/u);
+  assert.doesNotMatch(preflight, /reserve-intent|WINDOWS_CERT_PFX|WINDOWS_CERT_PASSWORD/u);
   assert.match(holdWorkflow, /missing canonical bridge build script/u);
   assert.match(holdWorkflow, /missing canonical bridge verification script/u);
   assert.match(holdWorkflow, /validate-candidate/u);

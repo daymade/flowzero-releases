@@ -52,7 +52,44 @@ concurrency:
   queue: max
 
 jobs:
+  powershell-signing-evidence-preflight:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact private source before any immutable reservation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ github.event.client_payload.intent.source.head_sha || inputs.head_sha }}
+          path: flowzero
+          lfs: false
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          package_json_file: flowzero/package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: flowzero/.nvmrc
+          cache: pnpm
+          cache-dependency-path: flowzero/pnpm-lock.yaml
+
+      - name: Install exact verifier dependencies
+        working-directory: flowzero
+        run: pnpm install --frozen-lockfile
+        env:
+          SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Prove unsigned PowerShell evidence transport before reserving versions
+        working-directory: flowzero
+        run: pnpm run release:verify:windows-legacy-bridge:ci -- --mode powershell-signing-probe
+
   prepare-hold-intent:
+    needs: powershell-signing-evidence-preflight
     runs-on: ubuntu-24.04
     outputs:
       bridge_version: ${{ steps.identity.outputs.bridge_version }}
