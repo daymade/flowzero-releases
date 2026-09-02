@@ -8,6 +8,7 @@ import {
   canonicalJson,
   releaseIntentFromEvent,
   validateReleaseIntent,
+  validateReleaseTransaction,
 } from './release-transaction.mjs';
 import {
   buildPlatformCheckpoint,
@@ -47,7 +48,22 @@ function intent(overrides = {}) {
     },
     ...overrides,
   };
+  if (identity.requested_platforms.includes('windows-x64')) {
+    identity.windows_signing_policy ??= 'unsigned';
+  } else {
+    delete identity.windows_signing_policy;
+  }
   return { ...identity, transaction_id: contentId(identity) };
+}
+
+function transactionFor(releaseIntent) {
+  return buildReleaseTransaction({
+    intent: releaseIntent,
+    releaseInfrastructureSha: infraSha,
+    workflowRunId: '123',
+    workflowRunAttempt: 1,
+    createdAt: '2026-08-26T00:00:00Z',
+  });
 }
 
 function macCandidate(releaseIntent, { verificationContract } = {}) {
@@ -220,6 +236,7 @@ function windowsCandidate(releaseIntent) {
   const candidate = {
     transaction_id: releaseIntent.transaction_id,
     platform: 'windows-x64',
+    verification_contract: 'windows_installer_v2',
     source: releaseIntent.source,
     release: releaseIntent.release,
     attempt: {
@@ -253,6 +270,10 @@ function windowsCandidate(releaseIntent) {
     ],
     update: {
       squirrel_releases: `${'d'.repeat(40)} ${nupkgName} 200\n`,
+      windows_signing_policy: releaseIntent.windows_signing_policy,
+      ...(releaseIntent.windows_signing_policy === 'authenticode'
+        ? { authenticode_signer_thumbprint_sha1: 'a'.repeat(40) }
+        : {}),
     },
   };
   return {
@@ -264,6 +285,7 @@ function windowsCandidate(releaseIntent) {
 
 function windowsVerification(candidate) {
   const setup = candidate.candidate.assets.find((asset) => asset.role === 'windows_setup');
+  const policy = candidate.candidate.update.windows_signing_policy;
   return {
     schema: 'flowzero.release_verification.v1',
     status: 'pass',
@@ -271,10 +293,33 @@ function windowsVerification(candidate) {
     version: candidate.candidate.release.version,
     source_head_sha: candidate.candidate.source.head_sha,
     platform: 'windows-x64',
+    candidate_id: candidate.candidate_id,
     subject: { name: setup.name, size: setup.size, sha256: setup.sha256 },
     evidence: [
-      { kind: 'windows_authenticode', status: 'pass', timestamp_present: true },
-      { kind: 'windows_installer', status: 'pass' },
+      {
+        kind: 'windows_signing_policy',
+        status: 'pass',
+        policy,
+        subject_role: 'windows_setup',
+        observed_status: policy === 'authenticode' ? 'Valid' : 'NotSigned',
+        timestamp_present: policy === 'authenticode',
+        ...(policy === 'authenticode' ? {
+          signer_thumbprint_sha1: 'a'.repeat(40),
+          signer_subject: 'CN=Flowzero Test Publisher',
+          timestamp_certificate_thumbprint_sha1: 'b'.repeat(40),
+          timestamp_certificate_not_before_utc: '2025-01-01T00:00:00.000Z',
+          timestamp_certificate_not_after_utc: '2030-01-01T00:00:00.000Z',
+        } : {
+          signer_present: false,
+          timestamp_certificate_present: false,
+        }),
+      },
+      {
+        kind: 'windows_installer',
+        status: 'pass',
+        setup_nupkg_payload_sha256_match: true,
+        root_updater_sha256_match: true,
+      },
     ],
     verified_at: '2026-08-26T00:00:00Z',
   };
@@ -333,6 +378,7 @@ test('validates the same content-addressed intent emitted by the source reposito
   });
   assert.equal(transaction.transaction_id, releaseIntent.transaction_id);
   assert.equal(transaction.attempt.release_infrastructure_sha, infraSha);
+  assert.deepEqual(validateReleaseTransaction(transaction), transaction);
   assert.throws(
     () => validateReleaseIntent({ ...releaseIntent, transaction_id: `sha256:${sha('9')}` }),
     /transaction id/,
@@ -526,9 +572,25 @@ test('archives the full candidate and verification contract for durable repair',
     candidate.candidate_id,
   );
   const tampered = structuredClone(archive);
-  tampered.archive.platforms[0].verification.evidence = [];
+  tampered.archive.platforms[0].verifications[0].evidence = [];
   tampered.archive_id = contentId(tampered.archive);
   assert.throws(() => validateReleaseArchiveManifest(tampered), /verification/u);
+  const invalidTransaction = structuredClone(transaction);
+  invalidTransaction.intent.transaction_id = `sha256:${sha('8')}`;
+  assert.throws(
+    () => buildReleaseArchiveManifest({
+      transaction: invalidTransaction,
+      entries: [{ candidate, verification: macVerification(candidate) }],
+    }),
+    /transaction id|identity mismatch/u,
+  );
+  const invalidArchivedTransaction = structuredClone(archive);
+  invalidArchivedTransaction.archive.release_transaction.transaction_id = `sha256:${sha('8')}`;
+  invalidArchivedTransaction.archive_id = contentId(invalidArchivedTransaction.archive);
+  assert.throws(
+    () => validateReleaseArchiveManifest(invalidArchivedTransaction),
+    /transaction identity mismatch/u,
+  );
 });
 
 test('rejects non-canonical tags at intent and candidate ingress', () => {
@@ -754,23 +816,180 @@ test('macOS v2 requires distinct fixture and live StepFun verification receipts'
   }
 });
 
-test('validates the exact Windows Squirrel candidate and timestamped installer receipt', () => {
-  const candidate = windowsCandidate(intent());
-  const built = buildPlatformCheckpoint({ phase: 'build_created', candidate });
+test('macOS v2 archives preserve the complete verification receipt set', () => {
+  const releaseIntent = intent({
+    requested_platforms: ['macos-arm64'],
+    archive_policy: { mode: 'eventual_bundle', required_platforms: ['macos-arm64'] },
+  });
+  const transaction = transactionFor(releaseIntent);
+  const candidate = macCandidate(releaseIntent, { verificationContract: 'macos_voice_context_v2' });
+  const fixture = macVerification(candidate);
+  const live = macLiveVerification(candidate);
+  const archive = buildReleaseArchiveManifest({
+    transaction,
+    entries: [{ candidate, verifications: [fixture, live] }],
+  });
+  assert.deepEqual(
+    validateReleaseArchiveManifest(archive).archive.platforms[0].verifications.map(
+      (receipt) => receipt.suite,
+    ),
+    ['macos-voice-context', 'macos-live-stepfun-timeline'],
+  );
+  assert.throws(() => buildReleaseArchiveManifest({
+    transaction,
+    entries: [{ candidate, verifications: [fixture] }],
+  }), /requires 2 release verification receipt/u);
+});
+
+test('validates exact Windows Squirrel candidates under explicit unsigned or Authenticode policy', () => {
+  const releaseIntent = intent();
+  const transaction = transactionFor(releaseIntent);
+  const candidate = windowsCandidate(releaseIntent);
+  assert.throws(
+    () => buildPlatformCheckpoint({ phase: 'build_created', candidate }),
+    /requires the immutable release transaction/u,
+  );
+  const built = buildPlatformCheckpoint({ phase: 'build_created', candidate, transaction });
   assert.doesNotThrow(() => buildPlatformCheckpoint({
     phase: 'platform_verified',
     candidate,
+    transaction,
     parent: built,
     verifications: [windowsVerification(candidate)],
   }));
-  const missingTimestamp = windowsVerification(candidate);
-  missingTimestamp.evidence[0].timestamp_present = false;
+  const falselySigned = windowsVerification(candidate);
+  falselySigned.evidence[0].observed_status = 'Valid';
   assert.throws(() => buildPlatformCheckpoint({
     phase: 'platform_verified',
     candidate,
+    transaction,
     parent: built,
+    verifications: [falselySigned],
+  }), /unsigned policy verification/u);
+  const authenticodeIntent = intent({ windows_signing_policy: 'authenticode' });
+  const authenticodeTransaction = transactionFor(authenticodeIntent);
+  const authenticodeCandidate = windowsCandidate(authenticodeIntent);
+  assert.doesNotThrow(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate: authenticodeCandidate,
+    transaction: authenticodeTransaction,
+    parent: buildPlatformCheckpoint({
+      phase: 'build_created', candidate: authenticodeCandidate, transaction: authenticodeTransaction,
+    }),
+    verifications: [windowsVerification(authenticodeCandidate)],
+  }));
+  const missingTimestamp = windowsVerification(authenticodeCandidate);
+  missingTimestamp.evidence[0].timestamp_present = false;
+  assert.throws(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate: authenticodeCandidate,
+    transaction: authenticodeTransaction,
+    parent: buildPlatformCheckpoint({
+      phase: 'build_created', candidate: authenticodeCandidate, transaction: authenticodeTransaction,
+    }),
     verifications: [missingTimestamp],
-  }), /timestamped Authenticode/u);
+  }), /Authenticode policy verification/u);
+  const unrelatedSigner = windowsVerification(authenticodeCandidate);
+  unrelatedSigner.evidence[0].signer_thumbprint_sha1 = 'c'.repeat(40);
+  assert.throws(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate: authenticodeCandidate,
+    transaction: authenticodeTransaction,
+    parent: buildPlatformCheckpoint({
+      phase: 'build_created', candidate: authenticodeCandidate, transaction: authenticodeTransaction,
+    }),
+    verifications: [unrelatedSigner],
+  }), /Authenticode policy verification/u);
+  for (const windowsSigningPolicy of [undefined, 'automatic']) {
+    const invalid = windowsCandidate(intent());
+    if (windowsSigningPolicy === undefined) {
+      delete invalid.candidate.update.windows_signing_policy;
+    } else {
+      invalid.candidate.update.windows_signing_policy = windowsSigningPolicy;
+    }
+    invalid.candidate_id = contentId(invalid.candidate);
+    assert.throws(
+      () => buildPlatformCheckpoint({ phase: 'build_created', candidate: invalid }),
+      /signing policy/u,
+    );
+  }
+  const policyMismatch = windowsCandidate(releaseIntent);
+  policyMismatch.candidate.update.windows_signing_policy = 'authenticode';
+  policyMismatch.candidate.update.authenticode_signer_thumbprint_sha1 = 'a'.repeat(40);
+  policyMismatch.candidate_id = contentId(policyMismatch.candidate);
+  assert.throws(
+    () => buildPlatformCheckpoint({
+      phase: 'build_created', candidate: policyMismatch, transaction,
+    }),
+    /signing policy does not match immutable release transaction/u,
+  );
+  const attemptMismatch = windowsCandidate(releaseIntent);
+  attemptMismatch.candidate.attempt = {
+    release_infrastructure_sha: 'c'.repeat(40),
+    workflow_run_id: '999',
+    workflow_run_attempt: 7,
+  };
+  attemptMismatch.candidate_id = contentId(attemptMismatch.candidate);
+  assert.throws(
+    () => buildPlatformCheckpoint({
+      phase: 'build_created', candidate: attemptMismatch, transaction,
+    }),
+    /attempt does not match immutable release transaction/u,
+  );
+  const legitimateJobRerun = windowsCandidate(releaseIntent);
+  legitimateJobRerun.candidate.attempt.workflow_run_attempt = 2;
+  legitimateJobRerun.candidate_id = contentId(legitimateJobRerun.candidate);
+  assert.doesNotThrow(() => buildPlatformCheckpoint({
+    phase: 'build_created', candidate: legitimateJobRerun, transaction,
+  }));
+  const duplicatedEvidence = windowsVerification(candidate);
+  duplicatedEvidence.evidence.splice(1, 0, {
+    ...duplicatedEvidence.evidence[0],
+    policy: 'authenticode',
+    observed_status: 'Valid',
+    timestamp_present: true,
+  });
+  assert.throws(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate,
+    transaction,
+    parent: built,
+    verifications: [duplicatedEvidence],
+  }), /evidence set is invalid/u);
+
+  const legacyCandidate = windowsCandidate(releaseIntent);
+  delete legacyCandidate.candidate.verification_contract;
+  delete legacyCandidate.candidate.update.windows_signing_policy;
+  legacyCandidate.candidate_id = contentId(legacyCandidate.candidate);
+  const legacyVerification = windowsVerification(candidate);
+  delete legacyVerification.candidate_id;
+  legacyVerification.subject = {
+    name: legacyCandidate.candidate.assets[0].name,
+    size: legacyCandidate.candidate.assets[0].size,
+    sha256: legacyCandidate.candidate.assets[0].sha256,
+  };
+  legacyVerification.evidence = [
+    { kind: 'windows_authenticode', status: 'pass', timestamp_present: true },
+    { kind: 'windows_installer', status: 'pass' },
+  ];
+  const legacyBuilt = buildPlatformCheckpoint({ phase: 'build_created', candidate: legacyCandidate });
+  assert.doesNotThrow(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate: legacyCandidate,
+    parent: legacyBuilt,
+    verifications: [legacyVerification],
+  }));
+  for (const duplicatedKind of ['windows_authenticode', 'windows_installer']) {
+    const contradictoryLegacyVerification = structuredClone(legacyVerification);
+    const row = contradictoryLegacyVerification.evidence.find((entry) => entry.kind === duplicatedKind);
+    contradictoryLegacyVerification.evidence.push({ ...row, status: 'fail' });
+    assert.throws(() => buildPlatformCheckpoint({
+      phase: 'platform_verified',
+      candidate: legacyCandidate,
+      parent: legacyBuilt,
+      verifications: [contradictoryLegacyVerification],
+    }), /Windows v1 verification evidence set is invalid/u);
+  }
   const extraRow = windowsCandidate(intent());
   extraRow.candidate.update.squirrel_releases += `${'d'.repeat(40)} obsolete.nupkg 200\n`;
   extraRow.candidate_id = contentId(extraRow.candidate);

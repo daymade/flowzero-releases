@@ -10,6 +10,8 @@ import { validateLegacyBridgeRequirement } from './windows-legacy-bridge-contrac
 export const INTENT_SCHEMA = 'flowzero.release_intent.v1';
 export const TRANSACTION_SCHEMA = 'flowzero.release_transaction.v1';
 export const SUPPORTED_PLATFORMS = Object.freeze(['macos-arm64', 'windows-x64']);
+export const WINDOWS_SIGNING_POLICIES = Object.freeze(['unsigned', 'authenticode']);
+export const DEFAULT_WINDOWS_SIGNING_POLICY = 'unsigned';
 
 export function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -25,11 +27,23 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+export function normalizeWindowsSigningPolicy(value, { allowDefault = false } = {}) {
+  const normalized = value === undefined && allowDefault
+    ? DEFAULT_WINDOWS_SIGNING_POLICY
+    : value;
+  assert(
+    WINDOWS_SIGNING_POLICIES.includes(normalized),
+    `Windows signing policy is invalid: ${normalized ?? '<missing>'}`,
+  );
+  return normalized;
+}
+
 export function buildManualReleaseIntent({
   version,
   headSha,
   platforms,
   variant,
+  windowsSigningPolicy,
   windowsLegacyBridgeHoldId = null,
   windowsLegacyBridgeTag = null,
   windowsLegacyBridgeAffectedVersionsJson = null,
@@ -58,6 +72,20 @@ export function buildManualReleaseIntent({
       required_platforms: requestedPlatforms,
     },
   };
+  if (requestedPlatforms.includes('windows-x64')) {
+    identity.windows_signing_policy = normalizeWindowsSigningPolicy(
+      windowsSigningPolicy,
+      { allowDefault: true },
+    );
+  } else {
+    assert(
+      windowsSigningPolicy === undefined
+        || windowsSigningPolicy === null
+        || windowsSigningPolicy === ''
+        || windowsSigningPolicy === DEFAULT_WINDOWS_SIGNING_POLICY,
+      'Windows signing policy requires windows-x64',
+    );
+  }
   const bridgeInputs = [
     windowsLegacyBridgeHoldId,
     windowsLegacyBridgeTag,
@@ -97,6 +125,7 @@ export function releaseIntentFromEvent(event) {
     headSha: event.inputs?.head_sha,
     platforms: event.inputs?.platforms,
     variant: event.inputs?.variant,
+    windowsSigningPolicy: event.inputs?.windows_signing_policy,
     windowsLegacyBridgeHoldId: event.inputs?.windows_legacy_bridge_hold_id || null,
     windowsLegacyBridgeTag: event.inputs?.windows_legacy_bridge_tag || null,
     windowsLegacyBridgeAffectedVersionsJson:
@@ -131,6 +160,11 @@ export function validateReleaseIntent(input) {
     validateLegacyBridgeRequirement(input.windows_legacy_bridge, input.release.version);
   }
   assert(new Set(input.requested_platforms).size === input.requested_platforms.length, 'release intent platforms are duplicated');
+  if (input.requested_platforms.includes('windows-x64')) {
+    normalizeWindowsSigningPolicy(input.windows_signing_policy);
+  } else {
+    assert(input.windows_signing_policy === undefined, 'non-Windows release intent contains a Windows signing policy');
+  }
   assert(input.promotion_policy?.mode === 'platform_independent', 'release intent promotion policy is invalid');
   assert(input.archive_policy?.mode === 'eventual_bundle', 'release intent archive policy is invalid');
   assert(
@@ -168,6 +202,31 @@ export function buildReleaseTransaction({
     },
     created_at: createdAt,
   };
+}
+
+export function validateReleaseTransaction(transaction) {
+  assert(transaction?.schema === TRANSACTION_SCHEMA, 'release transaction schema is invalid');
+  const intent = validateReleaseIntent(transaction.intent);
+  assert(transaction.transaction_id === intent.transaction_id, 'release transaction identity mismatch');
+  assert(
+    transaction.attempt?.release_infrastructure_repository === 'daymade/flowzero-releases',
+    'release transaction infrastructure repository is invalid',
+  );
+  assert(
+    /^[a-f0-9]{40}$/.test(transaction.attempt?.release_infrastructure_sha || ''),
+    'release transaction infrastructure SHA is invalid',
+  );
+  assert(
+    /^\d+$/.test(String(transaction.attempt?.workflow_run_id || '')),
+    'release transaction workflow run id is invalid',
+  );
+  assert(
+    Number.isSafeInteger(transaction.attempt?.workflow_run_attempt)
+      && transaction.attempt.workflow_run_attempt > 0,
+    'release transaction workflow run attempt is invalid',
+  );
+  assert(!Number.isNaN(Date.parse(transaction.created_at)), 'release transaction creation time is invalid');
+  return structuredClone({ ...transaction, intent });
 }
 
 async function atomicWriteJson(output, value) {
@@ -231,6 +290,7 @@ export async function main(argv = process.argv.slice(2)) {
       transaction_short: intent.transaction_id.slice('sha256:'.length, 'sha256:'.length + 16),
       macos_requested: String(intent.requested_platforms.includes('macos-arm64')),
       windows_requested: String(intent.requested_platforms.includes('windows-x64')),
+      windows_signing_policy: intent.windows_signing_policy ?? '',
       release_infra_sha: args['--release-infra-sha'],
       windows_nupkg_name: `Flowzero-${windowsPackageVersion}-full.nupkg`,
       windows_legacy_bridge_required: String(intent.windows_legacy_bridge !== undefined),

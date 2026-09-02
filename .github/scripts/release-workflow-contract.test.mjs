@@ -12,6 +12,14 @@ const promoteAction = await readFile(new URL('../actions/promote-update-channel/
 const mirrorScript = await readFile(new URL('./mirror-release-assets.mjs', import.meta.url), 'utf8');
 const promoteScript = await readFile(new URL('./promote-platform-channel.mjs', import.meta.url), 'utf8');
 const archiveScript = await readFile(new URL('./archive-release.mjs', import.meta.url), 'utf8');
+const assembleArchiveScript = await readFile(
+  new URL('./assemble-release-archive.mjs', import.meta.url),
+  'utf8',
+);
+const rehydrateArchiveScript = await readFile(
+  new URL('./rehydrate-platform-archive.mjs', import.meta.url),
+  'utf8',
+);
 const claimScript = await readFile(new URL('./claim-release-transaction.mjs', import.meta.url), 'utf8');
 const resumeMirrorWorkflow = await readFile(
   new URL('../workflows/resume-platform-mirror.yml', import.meta.url),
@@ -119,8 +127,10 @@ test('every downstream release job is gated by the durable transaction owner cla
   }
 });
 
-test('Windows signing configuration is required before durable release reservation', () => {
+test('Windows defaults to explicit unsigned delivery and gates certificate use behind Authenticode', () => {
   const prepare = jobBlock('prepare');
+  const windowsBuild = jobBlock('build-windows');
+  const windowsAcceptance = jobBlock('accept-windows');
   const signingPreflight = prepare.indexOf('Require Windows signing configuration before durable reservation');
   const bridgeReservation = prepare.indexOf('windows-legacy-bridge-reservation.mjs assert-transaction');
   const ownerClaim = prepare.indexOf('claim-release-transaction.mjs');
@@ -128,10 +138,24 @@ test('Windows signing configuration is required before durable release reservati
   assert.ok(bridgeReservation > signingPreflight, 'bridge reservation precedes Windows signing gate');
   assert.ok(ownerClaim > signingPreflight, 'release owner claim precedes Windows signing gate');
   const preflight = prepare.slice(signingPreflight, bridgeReservation);
-  assert.match(preflight, /if: steps\.transaction\.outputs\.windows_requested == 'true'/u);
+  assert.match(workflow, /windows_signing_policy:[\s\S]*default: unsigned[\s\S]*- unsigned[\s\S]*- authenticode/u);
+  assert.match(
+    preflight,
+    /if: steps\.transaction\.outputs\.windows_requested == 'true' && steps\.transaction\.outputs\.windows_signing_policy == 'authenticode'/u,
+  );
   assert.match(preflight, /WINDOWS_CERT_PFX_PRESENT: \$\{\{ secrets\.WINDOWS_CERT_PFX != '' \}\}/u);
   assert.match(preflight, /WINDOWS_CERT_PASSWORD_PRESENT: \$\{\{ secrets\.WINDOWS_CERT_PASSWORD != '' \}\}/u);
   assert.doesNotMatch(preflight, /WINDOWS_CERT_PFX:|WINDOWS_CERT_PASSWORD:/u);
+  assert.match(windowsBuild, /--windows-signing-policy "\$\{\{ needs\.prepare\.outputs\.windows_signing_policy \}\}"/u);
+  assert.match(windowsBuild, /needs\.prepare\.outputs\.windows_signing_policy == 'authenticode'/u);
+  assert.match(
+    jobBlock('mirror-windows'),
+    /artifact-ids: \$\{\{ needs\.prepare\.outputs\.transaction_artifact_id \}\}[\s\S]*--transaction "\$RUNNER_TEMP\/windows-transaction\/release-transaction\.json"/u,
+  );
+  assert.match(
+    windowsAcceptance,
+    /--candidate-manifest "\$env:RUNNER_TEMP\/windows-final\/evidence\/candidate\.json"/u,
+  );
 });
 
 test('macOS and Windows have independent build, mirror, promotion, and canary DAGs', () => {
@@ -290,6 +314,7 @@ test('a failed mirror resumes from exact accepted artifacts without rebuilding',
   assert.match(resumeMirrorWorkflow, /actions\/runs\/\$\{\{ inputs\.verification_run_id \|\| inputs\.source_run_id \}\}/u);
   assert.equal((resumeMirrorWorkflow.match(/github-token: \$\{\{ github\.token \}\}/gu) || []).length, 2);
   assert.match(resumeMirrorWorkflow, /validate-platform-artifact-recovery\.mjs/u);
+  assert.equal((resumeMirrorWorkflow.match(/--transaction "\$RUNNER_TEMP\/platform-final\/evidence\/release-transaction\.json"/gu) || []).length, 3);
   assert.match(resumeMirrorWorkflow, /macos_voice_context_v2/u);
   assert.match(resumeMirrorWorkflow, /live-stepfun-timeline\.json/u);
   assert.match(resumeMirrorWorkflow, /--phase build_created/u);
@@ -307,6 +332,17 @@ test('a failed mirror resumes from exact accepted artifacts without rebuilding',
     resumeMirrorWorkflow,
     /pnpm install|release:build:ci|electron-forge|notarytool|release-notarize-ci/u,
   );
+});
+
+test('current platform recovery preserves immutable transactions and complete Mac receipts', () => {
+  const macMirror = jobBlock('mirror-macos');
+  assert.equal((macMirror.match(/--transaction "\$RUNNER_TEMP\/mac-final\/evidence\/release-transaction\.json"/gu) || []).length, 3);
+  assert.match(workflow, /Bind immutable release transaction into the Mac candidate artifact/u);
+  assert.match(assembleArchiveScript, /live-stepfun-timeline\.json/u);
+  assert.match(assembleArchiveScript, /verifications: verificationPaths\.map/u);
+  assert.match(rehydrateArchiveScript, /live-stepfun-timeline\.json/u);
+  assert.match(operatorWorkflows[3], /verification_args=\(--verification/u);
+  assert.match(operatorWorkflows[3], /rehydrated\/evidence\/live-stepfun-timeline\.json/u);
 });
 
 test('a verifier-only macOS correction reuses one immutable candidate and emits a combined receipt set', () => {
@@ -421,6 +457,7 @@ test('every operator path shares the same non-cancelling per-platform writer loc
   }
   assert.match(operatorWorkflows[2], /checkpoints\/\$\{\{ inputs\.tag \}\}\.json/u);
   assert.match(operatorWorkflows[3], /rehydrate-platform-archive\.mjs/u);
+  assert.equal((operatorWorkflows[3].match(/--transaction "\$RUNNER_TEMP\/rehydrated\/evidence\/release-transaction\.json"/gu) || []).length, 3);
   assert.match(operatorWorkflows[4], /withdraw-platform-channel\.mjs/u);
   for (const name of ['promote-macos', 'promote-windows']) {
     assert.match(jobBlock(name), /cancel-in-progress: false/u);
