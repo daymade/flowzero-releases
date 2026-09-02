@@ -285,6 +285,27 @@ export function validateLegacyBridgeIntent(input) {
   return structuredClone(input);
 }
 
+export function validateLegacyBridgeSharedSource({
+  intent: intentInput,
+  checkedOutHeadSha,
+  sourcePackageVersion,
+}) {
+  const intent = validateLegacyBridgeIntent(intentInput);
+  assert(
+    checkedOutHeadSha === intent.source.head_sha,
+    'checked-out source does not match the exact shared source SHA',
+  );
+  assert(
+    sourcePackageVersion === intent.target.version,
+    'shared source package version does not match the planned target version',
+  );
+  return {
+    source_head_sha: intent.source.head_sha,
+    source_package_version: sourcePackageVersion,
+    target_version: intent.target.version,
+  };
+}
+
 export function validateLegacyBridgeCandidate(envelope, intentInput = null) {
   assert(envelope?.schema === LEGACY_BRIDGE_CANDIDATE_SCHEMA, 'legacy bridge candidate schema is unsupported');
   assert(envelope.purpose === LEGACY_BRIDGE_PURPOSE, 'legacy bridge candidate purpose is invalid');
@@ -564,6 +585,10 @@ export function buildLegacyBridgeCompatibilityBinding({ hold: rawHold, targetCan
   assert(requirement.bridge_hold_id === hold.hold_id, 'target bridge hold requirement mismatch');
   assert(requirement.bridge_tag === hold.hold.bridge.tag, 'target bridge tag requirement mismatch');
   assert(canonicalJson(requirement.affected_versions) === canonicalJson(hold.hold.affected_versions), 'target bridge affected versions mismatch');
+  assert(
+    hold.hold.source_head_sha === target.source.head_sha,
+    'legacy bridge hold and target candidate must share the exact source SHA',
+  );
   assert(compareVersion(hold.hold.bridge.version, target.release.version) < 0, 'legacy bridge version must be older than target');
   assert(canonicalJson(hold.hold.target) === canonicalJson({
     version: target.release.version,
@@ -704,6 +729,18 @@ export async function main(argv = process.argv.slice(2)) {
     }
     process.stdout.write(`${intent.transaction_id}\n`);
     return intent;
+  }
+  if (command === 'validate-shared-source') {
+    for (const key of ['--intent', '--checked-out-head-sha', '--source-package-version']) {
+      assert(values[key], `missing argument: ${key}`);
+    }
+    const result = validateLegacyBridgeSharedSource({
+      intent: JSON.parse(await readFile(path.resolve(values['--intent']), 'utf8')),
+      checkedOutHeadSha: values['--checked-out-head-sha'],
+      sourcePackageVersion: values['--source-package-version'],
+    });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return result;
   }
   if (command === 'validate-candidate') {
     for (const key of ['--intent', '--candidate']) assert(values[key], `missing argument: ${key}`);

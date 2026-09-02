@@ -60,6 +60,25 @@ test('manual hold inputs reach shell only through environment variables', () => 
   }
 });
 
+test('invalid shared source fails before any immutable tag reservation write', () => {
+  const prepare = jobBlock(holdWorkflow, 'prepare-hold-intent');
+  const sourceValidation = prepare.indexOf('windows-legacy-bridge-contract.mjs validate-shared-source');
+  const mainAncestryValidation = prepare.indexOf('compare/${QUALIFIED_SOURCE_HEAD_SHA}...main');
+  const reservationWrite = prepare.indexOf('windows-legacy-bridge-reservation.mjs reserve-intent');
+  assert.ok(sourceValidation >= 0, 'missing pre-reservation shared-source validation');
+  assert.ok(mainAncestryValidation >= 0, 'missing pre-reservation private-main ancestry validation');
+  assert.ok(reservationWrite >= 0, 'missing immutable tag reservation');
+  assert.ok(sourceValidation < reservationWrite, 'source validation occurs after immutable reservation');
+  assert.ok(mainAncestryValidation < reservationWrite, 'main ancestry validation occurs after immutable reservation');
+  assert.equal(
+    (prepare.match(/windows-legacy-bridge-reservation\.mjs reserve-intent/gu) || []).length,
+    1,
+    'qualification must have exactly one reservation write boundary',
+  );
+  assert.match(prepare, /ref: \$\{\{ steps\.requested-identity\.outputs\.head_sha \}\}/u);
+  assert.match(prepare, /--intent "\$RUNNER_TEMP\/legacy-bridge-intent\/intent\.json"/u);
+});
+
 test('hold workflow delegates build and verification to exactly the canonical source entrypoints', () => {
   assert.equal((holdWorkflow.match(/pnpm run release:build:windows-legacy-bridge:ci --/gu) || []).length, 1);
   assert.equal((holdWorkflow.match(/pnpm run release:verify:windows-legacy-bridge:ci --/gu) || []).length, 1);
@@ -70,6 +89,15 @@ test('hold workflow delegates build and verification to exactly the canonical so
   assert.match(holdWorkflow, /FLOWZERO_LEGACY_BRIDGE_TARGET_VERSION/u);
   assert.match(holdWorkflow, /FLOWZERO_LEGACY_BRIDGE_TARGET_FEED_URL/u);
   assert.match(holdWorkflow, /FLOWZERO_LEGACY_BRIDGE_TARGET_SETUP_URL/u);
+});
+
+test('qualification builds the bridge from the exact source shared with the planned target', () => {
+  const build = jobBlock(holdWorkflow, 'build-bridge');
+  assert.match(build, /git rev-parse HEAD/u);
+  assert.match(build, /windows-legacy-bridge-contract\.mjs validate-shared-source/u);
+  assert.match(build, /--checked-out-head-sha "\$actualHead"/u);
+  assert.match(build, /--source-package-version "\$packageVersion"/u);
+  assert.doesNotMatch(build, /packageVersion -ne/u);
 });
 
 test('qualification hold has no promotion, canary, archive, or normal release namespace escape', () => {

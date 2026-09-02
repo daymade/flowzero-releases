@@ -180,6 +180,11 @@ function assertTargetTransactionMatchesReservation(transaction, arbitration) {
   assert(transaction.intent.requested_platforms.includes('windows-x64'), 'reserved Windows bridge target requires the Windows lane');
   assert(requirement, 'reserved Windows bridge target omitted its compatibility requirement');
   assert(transaction.intent.release.tag === reservation.target_tag, 'reserved Windows target tag mismatch');
+  assert(
+    transaction.intent.source?.repository === 'daymade/flowzero'
+      && transaction.intent.source.head_sha === reservation.source_head_sha,
+    'reserved Windows target transaction source does not match the exact shared source SHA',
+  );
   assert(requirement.bridge_tag === reservation.bridge_tag, 'reserved Windows target bridge tag mismatch');
   assert(canonicalJson(requirement.affected_versions) === canonicalJson(reservation.affected_versions), 'reserved Windows target affected versions mismatch');
 }
@@ -260,6 +265,11 @@ export function assertReleaseCandidateReservations(candidateEnvelope, {
   }
   const targetReservation = validateReservation(targetReservationInput, 'target');
   assert(requirement, 'reserved Windows bridge target omitted its compatibility requirement');
+  assert(
+    candidate.source?.repository === 'daymade/flowzero'
+      && candidate.source.head_sha === targetReservation.reservation.source_head_sha,
+    'reserved Windows target candidate source does not match the exact shared source SHA',
+  );
   assert(requirement.bridge_tag === targetReservation.reservation.bridge_tag, 'reserved Windows target bridge tag mismatch');
   assert(canonicalJson(requirement.affected_versions) === canonicalJson(targetReservation.reservation.affected_versions), 'reserved Windows target affected versions mismatch');
   const holdKey = `channels/${candidate.release.channel}/platforms/windows-x64/legacy-bridges/${requirement.bridge_tag}/${requirement.bridge_hold_id.slice('sha256:'.length)}.json`;
@@ -286,6 +296,7 @@ export function assertReleaseTransactionReservations(transaction, options = {}) 
   return assertReleaseCandidateReservations({
     candidate: {
       platform: 'windows-x64',
+      source: transaction.intent.source,
       release: transaction.intent.release,
       update: transaction.intent.windows_legacy_bridge
         ? { windows_legacy_bridge: transaction.intent.windows_legacy_bridge }

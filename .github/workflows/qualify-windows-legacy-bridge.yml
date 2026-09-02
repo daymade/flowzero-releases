@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       bridge_version:
-        description: Exact bridge package version committed on private main
+        description: Exact compatibility bridge version built from the shared target source
         required: true
         type: string
       head_sha:
-        description: Exact 40-character private source SHA on main
+        description: Exact 40-character private source SHA shared by the bridge and planned target
         required: true
         type: string
       affected_versions_json:
@@ -64,6 +64,7 @@ jobs:
           persist-credentials: false
 
       - name: Build or read the explicit qualification-hold intent
+        id: requested-identity
         shell: bash
         run: |
           set -euo pipefail
@@ -85,8 +86,21 @@ jobs:
               --transaction-id "$INPUT_TRANSACTION_ID" \
               --output "$RUNNER_TEMP/legacy-bridge-intent/intent.json"
           fi
+          # Export only identity read from the same validated intent that every
+          # later qualification and reservation step consumes.
+          # shellcheck disable=SC2016
+          node -e '
+            const fs = require("node:fs");
+            const intent = JSON.parse(fs.readFileSync(process.env.INTENT));
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, [
+              `head_sha=${intent.source.head_sha}`,
+              `target_version=${intent.target.version}`,
+              "",
+            ].join("\n"));
+          '
         env:
           INTENT_JSON: ${{ toJSON(github.event.client_payload.intent) }}
+          INTENT: ${{ runner.temp }}/legacy-bridge-intent/intent.json
           OUTPUT: ${{ runner.temp }}/legacy-bridge-intent/intent.json
           INPUT_SOURCE_HEAD_SHA: ${{ inputs.head_sha }}
           INPUT_BRIDGE_VERSION: ${{ inputs.bridge_version }}
@@ -109,6 +123,36 @@ jobs:
           node release-infra/.github/scripts/check-release-tombstone.mjs --tag "$target_tag"
         env:
           INTENT: ${{ runner.temp }}/legacy-bridge-intent/intent.json
+
+      - name: Checkout the exact shared private source before reserving tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ steps.requested-identity.outputs.head_sha }}
+          path: flowzero-source-qualification
+          lfs: false
+          persist-credentials: false
+
+      - name: Qualify the shared source before any R2 reservation write
+        shell: bash
+        working-directory: flowzero-source-qualification
+        run: |
+          set -euo pipefail
+          actual_head="$(git rev-parse HEAD)"
+          package_version="$(node -p "require('./apps/desktop/package.json').version")"
+          node ../release-infra/.github/scripts/windows-legacy-bridge-contract.mjs validate-shared-source \
+            --intent "$RUNNER_TEMP/legacy-bridge-intent/intent.json" \
+            --checked-out-head-sha "$actual_head" \
+            --source-package-version "$package_version"
+          status="$(gh api "repos/daymade/flowzero/compare/${QUALIFIED_SOURCE_HEAD_SHA}...main" --jq '.status')"
+          if [[ "$status" != 'ahead' && "$status" != 'identical' ]]; then
+            echo "shared source SHA is not on private main: $status" >&2
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          QUALIFIED_SOURCE_HEAD_SHA: ${{ steps.requested-identity.outputs.head_sha }}
 
       - name: Reserve the bridge and planned target tags outside the normal release lane
         run: >-
@@ -182,17 +226,17 @@ jobs:
           artifact-ids: ${{ needs.prepare-hold-intent.outputs.intent_artifact_id }}
           path: ${{ runner.temp }}/legacy-bridge-intent
 
-      - name: Prove exact source and canonical bridge entrypoint
+      - name: Re-prove the frozen shared source and canonical bridge entrypoint
         shell: pwsh
         working-directory: flowzero
         run: |
+          $actualHead = git rev-parse HEAD
           $packageVersion = node -p "require('./apps/desktop/package.json').version"
-          if ($packageVersion -ne '${{ needs.prepare-hold-intent.outputs.bridge_version }}') { throw 'bridge version does not match package.json' }
-          $status = gh api "repos/daymade/flowzero/compare/${{ needs.prepare-hold-intent.outputs.head_sha }}...main" --jq '.status'
-          if ($status -ne 'ahead' -and $status -ne 'identical') { throw "bridge SHA is not on private main: $status" }
+          node ../release-infra/.github/scripts/windows-legacy-bridge-contract.mjs validate-shared-source `
+            --intent "$env:RUNNER_TEMP/legacy-bridge-intent/intent.json" `
+            --checked-out-head-sha "$actualHead" `
+            --source-package-version "$packageVersion"
           node -e "const s=require('./package.json').scripts;if(!s?.['release:build:windows-legacy-bridge:ci'])throw new Error('missing canonical bridge build script')"
-        env:
-          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6

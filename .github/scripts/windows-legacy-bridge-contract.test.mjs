@@ -24,6 +24,7 @@ import {
   validateLegacyBridgeCandidate,
   validateLegacyBridgeCompatibilityBinding,
   validateLegacyBridgeIntent,
+  validateLegacyBridgeSharedSource,
 } from './windows-legacy-bridge-contract.mjs';
 import { assertCurrentPointerUnchanged, legacyBridgeNamespace } from './mirror-windows-legacy-bridge.mjs';
 import { legacyBridgeHoldKey } from './promote-platform-channel.mjs';
@@ -178,7 +179,7 @@ function targetCandidate(hold = bridgeHold()) {
   const candidate = {
     transaction_id: `sha256:${digest('9')}`,
     platform: 'windows-x64',
-    source: { repository: 'daymade/flowzero', head_sha: 'c'.repeat(40) },
+    source: { repository: 'daymade/flowzero', head_sha: sourceSha },
     release: { version: '0.1.3-beta.2', tag: 'v0.1.3-beta.2', channel: 'beta', variant: 'standard' },
     attempt: { release_infrastructure_sha: infraSha, workflow_run_id: '42', workflow_run_attempt: 1 },
     assets: [
@@ -348,6 +349,29 @@ test('legacy bridge intent is content-addressed, Windows-only, and qualification
   }), /strictly increasing after conversion/u);
 });
 
+test('shared-source qualification rejects checkout SHA and package-version drift', () => {
+  const intent = bridgeIntent();
+  assert.deepEqual(validateLegacyBridgeSharedSource({
+    intent,
+    checkedOutHeadSha: sourceSha,
+    sourcePackageVersion: intent.target.version,
+  }), {
+    source_head_sha: sourceSha,
+    source_package_version: intent.target.version,
+    target_version: intent.target.version,
+  });
+  assert.throws(() => validateLegacyBridgeSharedSource({
+    intent,
+    checkedOutHeadSha: 'c'.repeat(40),
+    sourcePackageVersion: intent.target.version,
+  }), /exact shared source SHA/u);
+  assert.throws(() => validateLegacyBridgeSharedSource({
+    intent,
+    checkedOutHeadSha: sourceSha,
+    sourcePackageVersion: intent.bridge.version,
+  }), /source package version does not match the planned target version/u);
+});
+
 test('bridge candidate and hold bind exact assets under legacy-bridges and no current write', () => {
   const intent = bridgeIntent();
   const candidate = bridgeCandidate(intent);
@@ -402,6 +426,21 @@ test('content-addressed binding accepts only one exact acyclic old-to-bridge-to-
   assert.throws(
     () => validateLegacyBridgeCompatibilityBinding(tampered, { hold, targetCandidate: target }),
     /does not match exact hold\/target evidence/u,
+  );
+});
+
+test('binding fails closed when the bridge hold and same-version target come from different source SHAs', () => {
+  const hold = bridgeHold();
+  const target = targetCandidate(hold);
+  target.candidate.source.head_sha = 'c'.repeat(40);
+  target.candidate_id = contentId(target.candidate);
+  assert.throws(
+    () => buildLegacyBridgeCompatibilityBinding({
+      hold,
+      targetCandidate: target,
+      acceptance: acceptance(hold, target),
+    }),
+    /share the exact source SHA/u,
   );
 });
 
@@ -601,10 +640,29 @@ test('durable reservations block the bridge tag and target requirement omission'
     transaction_id: target.candidate.transaction_id,
     intent: {
       requested_platforms: ['windows-x64'],
+      source: target.candidate.source,
       release: target.candidate.release,
       windows_legacy_bridge: target.candidate.update.windows_legacy_bridge,
     },
   }, { env: storage.env, ...storage.dependencies }).status, 'reserved_target');
+
+  const differentSource = structuredClone(target);
+  differentSource.candidate.source.head_sha = 'c'.repeat(40);
+  differentSource.candidate_id = contentId(differentSource.candidate);
+  assert.throws(() => assertReleaseCandidateReservations(differentSource, {
+    env: storage.env,
+    ...storage.dependencies,
+  }), /exact shared source SHA/u);
+  assert.throws(() => claimNormalReleaseTagArbitration({
+    schema: 'flowzero.release_transaction.v1',
+    transaction_id: target.candidate.transaction_id,
+    intent: {
+      requested_platforms: ['windows-x64'],
+      source: differentSource.candidate.source,
+      release: target.candidate.release,
+      windows_legacy_bridge: target.candidate.update.windows_legacy_bridge,
+    },
+  }, { env: storage.env, ...storage.dependencies }), /exact shared source SHA/u);
 
   const omitted = structuredClone(target);
   delete omitted.candidate.update.windows_legacy_bridge;
