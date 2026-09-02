@@ -677,8 +677,10 @@ export function buildLegacyBridgeCompatibilityBinding({ hold: rawHold, targetCan
         && preservation.scope === 'isolated_production_profile'
         && preservation.seeded_before_first_hop === true
         && preservation.source_version === version
-        && /^[a-f0-9]{40}$/u.test(preservation.source_schema_commit || '')
-        && /^[a-f0-9]{64}$/u.test(preservation.source_schema_fixture_sha256 || '')
+        && preservation.source_schema_commit
+          === '2a8dfdbf97c7ce62adde5ec5e1557543d3537d87'
+        && preservation.source_schema_fixture_sha256
+          === '3f147765e52980d09ff4307dc58f010afc07b16b279a28ab06d26743618cb168'
         && preservation.initial_migration_count === 24
         && Number.isSafeInteger(preservation.final_migration_count)
         && preservation.final_migration_count >= preservation.initial_migration_count
