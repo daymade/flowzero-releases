@@ -9,6 +9,7 @@ import {
   validateReleaseTransaction,
 } from './release-transaction.mjs';
 import {
+  validateCandidateAgainstTransaction,
   validateCandidateEnvelope,
   validateVerificationReceipt,
 } from './release-platform-checkpoint.mjs';
@@ -32,14 +33,7 @@ export function buildReleaseArchiveManifest({ transaction, entries }) {
     const verification = validateVerificationReceipt(entry.verification, candidate);
     const platform = candidate.candidate.platform;
     assert(!byPlatform.has(platform), `duplicate archive platform: ${platform}`);
-    assert(candidate.candidate.transaction_id === transaction.transaction_id, 'archive candidate transaction mismatch');
-    if (platform === 'windows-x64') {
-      assert(
-        candidate.candidate.update?.windows_signing_policy
-          === transaction.intent.windows_signing_policy,
-        'archive Windows candidate signing policy does not match the release intent',
-      );
-    }
+    validateCandidateAgainstTransaction(candidate, transaction);
     let windowsLegacyBridge = null;
     if (candidate.candidate.update?.windows_legacy_bridge !== undefined) {
       assert(entry.windowsLegacyBridge, 'archive Windows bridge evidence is missing');
@@ -126,6 +120,7 @@ export function validateReleaseArchiveManifest(manifest) {
         'release archive Windows signing policy mismatch',
       );
     }
+    if (releaseTransaction) validateCandidateAgainstTransaction(candidate, releaseTransaction);
     validateVerificationReceipt(entry.verification, candidate);
     if (candidate.candidate.update?.windows_legacy_bridge !== undefined) {
       assert(entry.windows_legacy_bridge, 'release archive Windows bridge evidence is missing');

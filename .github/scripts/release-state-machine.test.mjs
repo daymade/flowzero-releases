@@ -271,6 +271,9 @@ function windowsCandidate(releaseIntent) {
     update: {
       squirrel_releases: `${'d'.repeat(40)} ${nupkgName} 200\n`,
       windows_signing_policy: releaseIntent.windows_signing_policy,
+      ...(releaseIntent.windows_signing_policy === 'authenticode'
+        ? { authenticode_signer_thumbprint_sha1: 'a'.repeat(40) }
+        : {}),
     },
   };
   return {
@@ -300,6 +303,16 @@ function windowsVerification(candidate) {
         subject_role: 'windows_setup',
         observed_status: policy === 'authenticode' ? 'Valid' : 'NotSigned',
         timestamp_present: policy === 'authenticode',
+        ...(policy === 'authenticode' ? {
+          signer_thumbprint_sha1: 'a'.repeat(40),
+          signer_subject: 'CN=Flowzero Test Publisher',
+          timestamp_certificate_thumbprint_sha1: 'b'.repeat(40),
+          timestamp_certificate_not_before_utc: '2025-01-01T00:00:00.000Z',
+          timestamp_certificate_not_after_utc: '2030-01-01T00:00:00.000Z',
+        } : {
+          signer_present: false,
+          timestamp_certificate_present: false,
+        }),
       },
       {
         kind: 'windows_installer',
@@ -851,6 +864,17 @@ test('validates exact Windows Squirrel candidates under explicit unsigned or Aut
     }),
     verifications: [missingTimestamp],
   }), /Authenticode policy verification/u);
+  const unrelatedSigner = windowsVerification(authenticodeCandidate);
+  unrelatedSigner.evidence[0].signer_thumbprint_sha1 = 'c'.repeat(40);
+  assert.throws(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate: authenticodeCandidate,
+    transaction: authenticodeTransaction,
+    parent: buildPlatformCheckpoint({
+      phase: 'build_created', candidate: authenticodeCandidate, transaction: authenticodeTransaction,
+    }),
+    verifications: [unrelatedSigner],
+  }), /Authenticode policy verification/u);
   for (const windowsSigningPolicy of [undefined, 'automatic']) {
     const invalid = windowsCandidate(intent());
     if (windowsSigningPolicy === undefined) {
@@ -866,12 +890,26 @@ test('validates exact Windows Squirrel candidates under explicit unsigned or Aut
   }
   const policyMismatch = windowsCandidate(releaseIntent);
   policyMismatch.candidate.update.windows_signing_policy = 'authenticode';
+  policyMismatch.candidate.update.authenticode_signer_thumbprint_sha1 = 'a'.repeat(40);
   policyMismatch.candidate_id = contentId(policyMismatch.candidate);
   assert.throws(
     () => buildPlatformCheckpoint({
       phase: 'build_created', candidate: policyMismatch, transaction,
     }),
     /signing policy does not match immutable release transaction/u,
+  );
+  const attemptMismatch = windowsCandidate(releaseIntent);
+  attemptMismatch.candidate.attempt = {
+    release_infrastructure_sha: 'c'.repeat(40),
+    workflow_run_id: '999',
+    workflow_run_attempt: 7,
+  };
+  attemptMismatch.candidate_id = contentId(attemptMismatch.candidate);
+  assert.throws(
+    () => buildPlatformCheckpoint({
+      phase: 'build_created', candidate: attemptMismatch, transaction,
+    }),
+    /attempt does not match immutable release transaction/u,
   );
   const duplicatedEvidence = windowsVerification(candidate);
   duplicatedEvidence.evidence.splice(1, 0, {
@@ -910,6 +948,17 @@ test('validates exact Windows Squirrel candidates under explicit unsigned or Aut
     parent: legacyBuilt,
     verifications: [legacyVerification],
   }));
+  for (const duplicatedKind of ['windows_authenticode', 'windows_installer']) {
+    const contradictoryLegacyVerification = structuredClone(legacyVerification);
+    const row = contradictoryLegacyVerification.evidence.find((entry) => entry.kind === duplicatedKind);
+    contradictoryLegacyVerification.evidence.push({ ...row, status: 'fail' });
+    assert.throws(() => buildPlatformCheckpoint({
+      phase: 'platform_verified',
+      candidate: legacyCandidate,
+      parent: legacyBuilt,
+      verifications: [contradictoryLegacyVerification],
+    }), /Windows v1 verification evidence set is invalid/u);
+  }
   const extraRow = windowsCandidate(intent());
   extraRow.candidate.update.squirrel_releases += `${'d'.repeat(40)} obsolete.nupkg 200\n`;
   extraRow.candidate_id = contentId(extraRow.candidate);

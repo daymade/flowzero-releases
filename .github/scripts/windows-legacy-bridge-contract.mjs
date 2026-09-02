@@ -671,6 +671,20 @@ export function buildLegacyBridgeCompatibilityBinding({ hold: rawHold, targetCan
         `two-hop acceptance evidence is incomplete: ${hop.from_version}->${hop.to_version}`,
       );
     }
+    const preservation = route.user_data_preservation;
+    assert(
+      preservation?.schema === 'flowzero.windows_update_user_data_preservation.v1'
+        && preservation.scope === 'isolated_app_user_data'
+        && preservation.seeded_before_first_hop === true
+        && Number.isSafeInteger(preservation.file_count)
+        && preservation.file_count > 0
+        && Number.isSafeInteger(preservation.byte_count)
+        && preservation.byte_count > 0
+        && /^[a-f0-9]{64}$/u.test(preservation.before_sha256 || '')
+        && preservation.after_sha256 === preservation.before_sha256
+        && preservation.preserved === true,
+      `two-hop acceptance user data preservation evidence is incomplete: ${version}`,
+    );
   }
   assertAcyclic(acceptance.routes);
   const binding = {

@@ -306,6 +306,7 @@ test('a failed mirror resumes from exact accepted artifacts without rebuilding',
   assert.match(resumeMirrorWorkflow, /actions\/runs\/\$\{\{ inputs\.verification_run_id \|\| inputs\.source_run_id \}\}/u);
   assert.equal((resumeMirrorWorkflow.match(/github-token: \$\{\{ github\.token \}\}/gu) || []).length, 2);
   assert.match(resumeMirrorWorkflow, /validate-platform-artifact-recovery\.mjs/u);
+  assert.equal((resumeMirrorWorkflow.match(/--transaction "\$RUNNER_TEMP\/platform-final\/evidence\/release-transaction\.json"/gu) || []).length, 3);
   assert.match(resumeMirrorWorkflow, /macos_voice_context_v2/u);
   assert.match(resumeMirrorWorkflow, /live-stepfun-timeline\.json/u);
   assert.match(resumeMirrorWorkflow, /--phase build_created/u);
@@ -437,6 +438,7 @@ test('every operator path shares the same non-cancelling per-platform writer loc
   }
   assert.match(operatorWorkflows[2], /checkpoints\/\$\{\{ inputs\.tag \}\}\.json/u);
   assert.match(operatorWorkflows[3], /rehydrate-platform-archive\.mjs/u);
+  assert.equal((operatorWorkflows[3].match(/--transaction "\$RUNNER_TEMP\/rehydrated\/evidence\/release-transaction\.json"/gu) || []).length, 3);
   assert.match(operatorWorkflows[4], /withdraw-platform-channel\.mjs/u);
   for (const name of ['promote-macos', 'promote-windows']) {
     assert.match(jobBlock(name), /cancel-in-progress: false/u);

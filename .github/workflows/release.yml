@@ -660,6 +660,22 @@ jobs:
           WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
           WINDOWS_CERT_FILE: ${{ runner.temp }}\flowzero-signing.pfx
 
+      - name: Resolve the configured Windows Authenticode signer identity
+        id: windows-signer
+        if: needs.prepare.outputs.windows_signing_policy == 'authenticode'
+        shell: pwsh
+        run: |
+          $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+          $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $env:WINDOWS_CERT_FILE,
+            $env:WINDOWS_CERT_PASSWORD,
+            $flags
+          )
+          "thumbprint_sha1=$($cert.Thumbprint.ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+        env:
+          WINDOWS_CERT_FILE: ${{ runner.temp }}\flowzero-signing.pfx
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+
       - name: Install exact dependencies
         run: pnpm install --frozen-lockfile
         env:
@@ -692,6 +708,12 @@ jobs:
         shell: pwsh
         run: |
           $bridgeArgs = @()
+          $signerArgs = @()
+          if ('${{ needs.prepare.outputs.windows_signing_policy }}' -eq 'authenticode') {
+            $signerArgs += @(
+              '--windows-authenticode-signer-thumbprint', '${{ steps.windows-signer.outputs.thumbprint_sha1 }}'
+            )
+          }
           if ('${{ needs.prepare.outputs.windows_legacy_bridge_required }}' -eq 'true') {
             $bridgeArgs += @(
               '--windows-legacy-bridge-hold-id', '${{ needs.prepare.outputs.windows_legacy_bridge_hold_id }}',
@@ -712,11 +734,25 @@ jobs:
             --run-id "$env:GITHUB_RUN_ID" `
             --run-attempt "$env:GITHUB_RUN_ATTEMPT" `
             --windows-signing-policy '${{ needs.prepare.outputs.windows_signing_policy }}' `
+            @signerArgs `
             --asset "windows_setup=$env:RUNNER_TEMP/windows-final/artifacts/Flowzero-${{ needs.prepare.outputs.version }}-Setup.exe" `
             --asset "windows_nupkg=$env:RUNNER_TEMP/windows-final/artifacts/${{ needs.prepare.outputs.windows_nupkg_name }}" `
             --asset "windows_releases=$env:RUNNER_TEMP/windows-final/artifacts/RELEASES" `
             @bridgeArgs `
             --output "$env:RUNNER_TEMP/windows-final/evidence/candidate.json"
+
+      - name: Download immutable release transaction for Windows recovery
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.transaction_artifact_id }}
+          path: ${{ runner.temp }}/windows-transaction
+
+      - name: Bind immutable release transaction into the Windows candidate artifact
+        shell: pwsh
+        run: >-
+          Copy-Item
+          "$env:RUNNER_TEMP/windows-transaction/release-transaction.json"
+          "$env:RUNNER_TEMP/windows-final/evidence/release-transaction.json"
 
       - name: Upload immutable final Windows candidate
         id: upload
@@ -772,6 +808,14 @@ jobs:
           artifact-ids: ${{ needs.build-windows.outputs.final_artifact_id }}
           path: ${{ runner.temp }}/windows-final
 
+      - name: Materialize the configured Windows certificate for Authenticode verification
+        if: needs.prepare.outputs.windows_signing_policy == 'authenticode'
+        shell: pwsh
+        run: node -e "require('node:fs').writeFileSync(process.env.WINDOWS_CERT_FILE,Buffer.from(process.env.WINDOWS_CERT_PFX,'base64'))"
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_FILE: ${{ runner.temp }}\flowzero-verification-signing.pfx
+
       - name: Verify the explicit Windows signing policy and installed app
         run: >-
           pnpm run release:verify:ci --
@@ -782,6 +826,14 @@ jobs:
           --release-dir "$env:RUNNER_TEMP/windows-final/artifacts"
           --subject-file "$env:RUNNER_TEMP/windows-final/artifacts/Flowzero-${{ needs.prepare.outputs.version }}-Setup.exe"
           --output "$env:RUNNER_TEMP/windows-verification/verification.json"
+        env:
+          WINDOWS_CERT_FILE: ${{ needs.prepare.outputs.windows_signing_policy == 'authenticode' && format('{0}\flowzero-verification-signing.pfx', runner.temp) || '' }}
+          WINDOWS_CERT_PASSWORD: ${{ needs.prepare.outputs.windows_signing_policy == 'authenticode' && secrets.WINDOWS_CERT_PASSWORD || '' }}
+
+      - name: Remove the materialized Windows verification certificate
+        if: ${{ always() && needs.prepare.outputs.windows_signing_policy == 'authenticode' }}
+        shell: pwsh
+        run: Remove-Item -LiteralPath "$env:RUNNER_TEMP\flowzero-verification-signing.pfx" -Force -ErrorAction SilentlyContinue
 
       - name: Read back the exact held bridge and immutable assets
         if: needs.prepare.outputs.windows_legacy_bridge_required == 'true'

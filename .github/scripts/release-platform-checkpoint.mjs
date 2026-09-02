@@ -79,7 +79,7 @@ function resolvedVerificationContract(candidate) {
     : 'windows_installer_v1';
 }
 
-function validateCandidateAgainstTransaction(candidateEnvelope, rawTransaction) {
+export function validateCandidateAgainstTransaction(candidateEnvelope, rawTransaction) {
   const candidate = candidateEnvelope.candidate;
   const contract = resolvedVerificationContract(candidate);
   if (rawTransaction === null || rawTransaction === undefined) {
@@ -95,6 +95,14 @@ function validateCandidateAgainstTransaction(candidateEnvelope, rawTransaction) 
   assert(intent.requested_platforms.includes(candidate.platform), 'candidate platform was not requested by immutable release transaction');
   assert(canonicalJson(candidate.source) === canonicalJson(intent.source), 'candidate source does not match immutable release transaction');
   assert(canonicalJson(candidate.release) === canonicalJson(intent.release), 'candidate release does not match immutable release transaction');
+  assert(
+    canonicalJson(candidate.attempt) === canonicalJson({
+      release_infrastructure_sha: transaction.attempt.release_infrastructure_sha,
+      workflow_run_id: transaction.attempt.workflow_run_id,
+      workflow_run_attempt: transaction.attempt.workflow_run_attempt,
+    }),
+    'candidate attempt does not match immutable release transaction',
+  );
   if (candidate.platform === 'windows-x64') {
     assert(
       candidate.update?.windows_signing_policy === intent.windows_signing_policy,
@@ -320,7 +328,18 @@ export function validateCandidateEnvelope(envelope) {
       );
     }
     if (candidate.verification_contract === 'windows_installer_v2') {
-      validateWindowsSigningPolicy(candidate.update?.windows_signing_policy);
+      const signingPolicy = validateWindowsSigningPolicy(candidate.update?.windows_signing_policy);
+      if (signingPolicy === 'authenticode') {
+        assert(
+          /^[a-f0-9]{40}$/u.test(candidate.update?.authenticode_signer_thumbprint_sha1 || ''),
+          'candidate Windows Authenticode signer thumbprint is invalid',
+        );
+      } else {
+        assert(
+          candidate.update?.authenticode_signer_thumbprint_sha1 === undefined,
+          'unsigned Windows candidate cannot declare an Authenticode signer thumbprint',
+        );
+      }
     } else {
       assert(
         candidate.update?.windows_signing_policy === undefined,
@@ -423,9 +442,18 @@ export function validateVerificationReceipt(receipt, candidateEnvelope) {
   } else {
     assert(subject.role === 'windows_setup', 'Windows verification subject must be the Setup executable');
     if (resolvedVerificationContract(candidate) === 'windows_installer_v1') {
-      const signature = receipt.evidence?.find(
+      assert(Array.isArray(receipt.evidence) && receipt.evidence.length === 2, 'Windows v1 verification evidence set is invalid');
+      const signatureRows = receipt.evidence.filter(
         (entry) => entry.kind === 'windows_authenticode',
       );
+      const installerRows = receipt.evidence.filter(
+        (entry) => entry.kind === 'windows_installer',
+      );
+      assert(
+        signatureRows.length === 1 && installerRows.length === 1,
+        'Windows v1 verification evidence kinds are invalid',
+      );
+      const [signature] = signatureRows;
       assert(
         signature?.status === 'pass' && signature.timestamp_present === true,
         'Windows verification is missing valid timestamped Authenticode evidence',
@@ -451,7 +479,17 @@ export function validateVerificationReceipt(receipt, candidateEnvelope) {
             && signature.policy === 'authenticode'
             && signature.subject_role === 'windows_setup'
             && signature.observed_status === 'Valid'
-            && signature.timestamp_present === true,
+            && signature.timestamp_present === true
+            && /^[a-f0-9]{40}$/u.test(signature.signer_thumbprint_sha1 || '')
+            && signature.signer_thumbprint_sha1
+              === candidate.update.authenticode_signer_thumbprint_sha1
+            && typeof signature.signer_subject === 'string'
+            && signature.signer_subject.trim().length > 0
+            && /^[a-f0-9]{40}$/u.test(signature.timestamp_certificate_thumbprint_sha1 || '')
+            && !Number.isNaN(Date.parse(signature.timestamp_certificate_not_before_utc))
+            && !Number.isNaN(Date.parse(signature.timestamp_certificate_not_after_utc))
+            && Date.parse(signature.timestamp_certificate_not_before_utc)
+              < Date.parse(signature.timestamp_certificate_not_after_utc),
           'Windows Authenticode policy verification is incomplete',
         );
       } else {
@@ -460,15 +498,15 @@ export function validateVerificationReceipt(receipt, candidateEnvelope) {
             && signature.policy === 'unsigned'
             && signature.subject_role === 'windows_setup'
             && signature.observed_status === 'NotSigned'
-            && signature.timestamp_present === false,
+            && signature.timestamp_present === false
+            && signature.signer_present === false
+            && signature.timestamp_certificate_present === false,
           'Windows unsigned policy verification is incomplete',
         );
       }
     }
-    const installer = receipt.evidence?.find(
-      (entry) => entry.kind === 'windows_installer' && entry.status === 'pass',
-    );
-    assert(installer, 'Windows verification is missing installer smoke evidence');
+    const installer = receipt.evidence?.find((entry) => entry.kind === 'windows_installer');
+    assert(installer?.status === 'pass', 'Windows verification is missing installer smoke evidence');
     if (resolvedVerificationContract(candidate) === 'windows_installer_v2') {
       assert(
         installer.setup_nupkg_payload_sha256_match === true

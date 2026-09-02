@@ -119,6 +119,12 @@ export function main(argv = process.argv.slice(2), env = process.env) {
     path.join(evidenceRoot, 'candidate.json'),
     `${JSON.stringify(platformEntry.candidate, null, 2)}\n`,
   );
+  if (manifest.archive.release_transaction) {
+    writeFileSync(
+      path.join(evidenceRoot, 'release-transaction.json'),
+      `${JSON.stringify(manifest.archive.release_transaction, null, 2)}\n`,
+    );
+  }
   if (platformEntry.windows_legacy_bridge) {
     writeFileSync(
       path.join(evidenceRoot, 'compatibility-binding.json'),

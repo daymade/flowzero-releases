@@ -255,6 +255,16 @@ function acceptance(hold = bridgeHold(), target = targetCandidate(hold)) {
     affected_versions: ['0.1.2-beta.7'],
     routes: [{
       from_version: '0.1.2-beta.7',
+      user_data_preservation: {
+        schema: 'flowzero.windows_update_user_data_preservation.v1',
+        scope: 'isolated_app_user_data',
+        seeded_before_first_hop: true,
+        file_count: 3,
+        byte_count: 256,
+        before_sha256: digest('8'),
+        after_sha256: digest('8'),
+        preserved: true,
+      },
       hops: [
         { from_version: '0.1.2-beta.7', to_version: '0.1.3-beta.1', status: 'pass', complete_payload: true, payload_sha256_match: true, launch_verified: true, zero_process_residue: true },
         { from_version: '0.1.3-beta.1', to_version: '0.1.3-beta.2', status: 'pass', complete_payload: true, payload_sha256_match: true, launch_verified: true, zero_process_residue: true },
@@ -293,6 +303,16 @@ function targetVerification(target) {
         subject_role: 'windows_setup',
         observed_status: policy === 'authenticode' ? 'Valid' : 'NotSigned',
         timestamp_present: policy === 'authenticode',
+        ...(policy === 'authenticode' ? {
+          signer_thumbprint_sha1: 'a'.repeat(40),
+          signer_subject: 'CN=Flowzero Test Publisher',
+          timestamp_certificate_thumbprint_sha1: 'b'.repeat(40),
+          timestamp_certificate_not_before_utc: '2025-01-01T00:00:00.000Z',
+          timestamp_certificate_not_after_utc: '2030-01-01T00:00:00.000Z',
+        } : {
+          signer_present: false,
+          timestamp_certificate_present: false,
+        }),
       },
       {
         kind: 'windows_installer',
@@ -533,6 +553,30 @@ test('binding rejects missing evidence, version inversions, discontinuities, cyc
     /incomplete/u,
   );
 
+  const preservationMissing = acceptance(hold, target);
+  delete preservationMissing.routes[0].user_data_preservation;
+  rehashAcceptance(preservationMissing);
+  assert.throws(
+    () => buildLegacyBridgeCompatibilityBinding({
+      hold,
+      targetCandidate: target,
+      acceptance: preservationMissing,
+    }),
+    /user data preservation evidence is incomplete/u,
+  );
+
+  const preservationChanged = acceptance(hold, target);
+  preservationChanged.routes[0].user_data_preservation.after_sha256 = digest('9');
+  rehashAcceptance(preservationChanged);
+  assert.throws(
+    () => buildLegacyBridgeCompatibilityBinding({
+      hold,
+      targetCandidate: target,
+      acceptance: preservationChanged,
+    }),
+    /user data preservation evidence is incomplete/u,
+  );
+
   const cyclic = acceptance(hold, target);
   cyclic.routes[0].hops[1].to_version = '0.1.2-beta.7';
   rehashAcceptance(cyclic);
@@ -672,6 +716,28 @@ test('mirrored checkpoint, platform manifest, and archive preserve exact bridge 
   });
   const validated = validateReleaseArchiveManifest(archive);
   assert.equal(validated.archive.platforms[0].windows_legacy_bridge.binding.binding_id, binding.binding_id);
+
+  const missingBridgeCandidate = targetCandidate(hold);
+  delete missingBridgeCandidate.candidate.update.windows_legacy_bridge;
+  missingBridgeCandidate.candidate_id = contentId(missingBridgeCandidate.candidate);
+  assert.throws(() => buildReleaseArchiveManifest({
+    transaction,
+    entries: [{
+      candidate: missingBridgeCandidate,
+      verification: targetVerification(missingBridgeCandidate),
+    }],
+  }), /bridge requirement does not match immutable release transaction/u);
+
+  const mismatchedAttemptArchive = structuredClone(archive);
+  const archivedEntry = mismatchedAttemptArchive.archive.platforms[0];
+  archivedEntry.candidate.candidate.attempt.workflow_run_id = '999';
+  archivedEntry.candidate.candidate_id = contentId(archivedEntry.candidate.candidate);
+  archivedEntry.verification.candidate_id = archivedEntry.candidate.candidate_id;
+  mismatchedAttemptArchive.archive_id = contentId(mismatchedAttemptArchive.archive);
+  assert.throws(
+    () => validateReleaseArchiveManifest(mismatchedAttemptArchive),
+    /attempt does not match immutable release transaction/u,
+  );
 });
 
 test('durable reservations block the bridge tag and target requirement omission', () => {
