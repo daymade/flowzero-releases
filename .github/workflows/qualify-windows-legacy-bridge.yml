@@ -154,6 +154,18 @@ jobs:
           GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
           QUALIFIED_SOURCE_HEAD_SHA: ${{ steps.requested-identity.outputs.head_sha }}
 
+      - name: Require Windows signing configuration before reserving immutable tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$WINDOWS_CERT_PFX_PRESENT" != 'true' || "$WINDOWS_CERT_PASSWORD_PRESENT" != 'true' ]]; then
+            echo 'Windows Authenticode secrets must exist before bridge or target tags are reserved.' >&2
+            exit 1
+          fi
+        env:
+          WINDOWS_CERT_PFX_PRESENT: ${{ secrets.WINDOWS_CERT_PFX != '' }}
+          WINDOWS_CERT_PASSWORD_PRESENT: ${{ secrets.WINDOWS_CERT_PASSWORD != '' }}
+
       - name: Reserve the bridge and planned target tags outside the normal release lane
         run: >-
           node release-infra/.github/scripts/windows-legacy-bridge-reservation.mjs reserve-intent

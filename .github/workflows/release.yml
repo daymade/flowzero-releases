@@ -105,6 +105,19 @@ jobs:
       - name: Verify the frozen release infrastructure contracts
         run: node --test .github/scripts/*.test.mjs workers/release-download/test/*.test.js
 
+      - name: Require Windows signing configuration before durable reservation
+        if: steps.transaction.outputs.windows_requested == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$WINDOWS_CERT_PFX_PRESENT" != 'true' || "$WINDOWS_CERT_PASSWORD_PRESENT" != 'true' ]]; then
+            echo 'Windows Authenticode secrets must exist before the release transaction is reserved.' >&2
+            exit 1
+          fi
+        env:
+          WINDOWS_CERT_PFX_PRESENT: ${{ secrets.WINDOWS_CERT_PFX != '' }}
+          WINDOWS_CERT_PASSWORD_PRESENT: ${{ secrets.WINDOWS_CERT_PASSWORD != '' }}
+
       - name: Enforce durable Windows bridge and target reservations
         run: >-
           node .github/scripts/windows-legacy-bridge-reservation.mjs assert-transaction
