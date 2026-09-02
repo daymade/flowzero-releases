@@ -64,12 +64,15 @@ test('invalid shared source fails before any immutable tag reservation write', (
   const prepare = jobBlock(holdWorkflow, 'prepare-hold-intent');
   const sourceValidation = prepare.indexOf('windows-legacy-bridge-contract.mjs validate-shared-source');
   const mainAncestryValidation = prepare.indexOf('compare/${QUALIFIED_SOURCE_HEAD_SHA}...main');
+  const signingPreflight = prepare.indexOf('Require Windows signing configuration before reserving immutable tags');
   const reservationWrite = prepare.indexOf('windows-legacy-bridge-reservation.mjs reserve-intent');
   assert.ok(sourceValidation >= 0, 'missing pre-reservation shared-source validation');
   assert.ok(mainAncestryValidation >= 0, 'missing pre-reservation private-main ancestry validation');
+  assert.ok(signingPreflight >= 0, 'missing pre-reservation signing configuration gate');
   assert.ok(reservationWrite >= 0, 'missing immutable tag reservation');
   assert.ok(sourceValidation < reservationWrite, 'source validation occurs after immutable reservation');
   assert.ok(mainAncestryValidation < reservationWrite, 'main ancestry validation occurs after immutable reservation');
+  assert.ok(signingPreflight < reservationWrite, 'signing configuration is checked after immutable reservation');
   assert.equal(
     (prepare.match(/windows-legacy-bridge-reservation\.mjs reserve-intent/gu) || []).length,
     1,
@@ -77,6 +80,12 @@ test('invalid shared source fails before any immutable tag reservation write', (
   );
   assert.match(prepare, /ref: \$\{\{ steps\.requested-identity\.outputs\.head_sha \}\}/u);
   assert.match(prepare, /--intent "\$RUNNER_TEMP\/legacy-bridge-intent\/intent\.json"/u);
+  assert.match(prepare, /WINDOWS_CERT_PFX_PRESENT: \$\{\{ secrets\.WINDOWS_CERT_PFX != '' \}\}/u);
+  assert.match(prepare, /WINDOWS_CERT_PASSWORD_PRESENT: \$\{\{ secrets\.WINDOWS_CERT_PASSWORD != '' \}\}/u);
+  assert.doesNotMatch(
+    prepare.slice(signingPreflight, reservationWrite),
+    /WINDOWS_CERT_PFX:|WINDOWS_CERT_PASSWORD:/u,
+  );
 });
 
 test('hold workflow delegates build and verification to exactly the canonical source entrypoints', () => {
