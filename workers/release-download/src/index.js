@@ -13,6 +13,35 @@ const PLATFORM_CHANNEL_STATE_KEY_PATTERN =
   /^channels\/(stable|beta)\/platforms\/(macos-arm64|windows-x64)\/states\/(?:no-release|withdrawn-v[0-9A-Za-z.+-]+)\.json$/;
 const CURRENT_PLATFORM_CHANNEL_KEY_PATTERN =
   /^channels\/(stable|beta)\/platforms\/(macos-arm64|windows-x64)\/current\.json$/;
+const WINDOWS_LEGACY_BRIDGE_KEY_PATTERN =
+  /^channels\/(stable|beta)\/platforms\/windows-x64\/legacy-bridges\/v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.(?:0|[1-9]\d*))?)\/(.+)$/;
+const WINDOWS_LEGACY_BRIDGE_ASSET_SUFFIX_PATTERN =
+  /^candidates\/[a-f0-9]{64}\/assets\/([^/]+)$/;
+const WINDOWS_LEGACY_BRIDGE_CHECKPOINT_SUFFIX_PATTERN =
+  /^checkpoints\/[a-f0-9]{64}\.json$/;
+const WINDOWS_LEGACY_BRIDGE_HOLD_SUFFIX_PATTERN = /^[a-f0-9]{64}\.json$/;
+
+function isWindowsLegacyBridgeKey(key) {
+  const match = WINDOWS_LEGACY_BRIDGE_KEY_PATTERN.exec(key);
+  if (!match) return false;
+
+  const [, channel, version, suffix] = match;
+  const isBetaVersion = version.includes('-beta.');
+  if ((channel === 'beta') !== isBetaVersion) return false;
+
+  const assetMatch = WINDOWS_LEGACY_BRIDGE_ASSET_SUFFIX_PATTERN.exec(suffix);
+  if (assetMatch) {
+    const squirrelVersion = version.replace(/-beta\.(\d+)$/u, '-beta$1');
+    return new Set([
+      `Flowzero-${version}-Setup.exe`,
+      `Flowzero-${squirrelVersion}-full.nupkg`,
+      'RELEASES',
+    ]).has(assetMatch[1]);
+  }
+
+  return WINDOWS_LEGACY_BRIDGE_CHECKPOINT_SUFFIX_PATTERN.test(suffix)
+    || WINDOWS_LEGACY_BRIDGE_HOLD_SUFFIX_PATTERN.test(suffix);
+}
 
 function defaultCacheControl(key) {
   return CURRENT_CHANNEL_KEY_PATTERN.test(key) || CURRENT_PLATFORM_CHANNEL_KEY_PATTERN.test(key)
@@ -35,6 +64,7 @@ function responseHeaders(object, contentLength, key) {
 
 function parseObjectKey(requestUrl) {
   const encodedPath = new URL(requestUrl).pathname.replace(/^\/+/, '');
+  if (/%(?:2f|5c)/iu.test(encodedPath)) return null;
   let key;
 
   try {
@@ -51,7 +81,8 @@ function parseObjectKey(requestUrl) {
     || IMMUTABLE_PLATFORM_CHANNEL_KEY_PATTERN.test(key)
     || IMMUTABLE_PLATFORM_CHECKPOINT_KEY_PATTERN.test(key)
     || PLATFORM_CHANNEL_STATE_KEY_PATTERN.test(key)
-    || CURRENT_PLATFORM_CHANNEL_KEY_PATTERN.test(key);
+    || CURRENT_PLATFORM_CHANNEL_KEY_PATTERN.test(key)
+    || isWindowsLegacyBridgeKey(key);
   if (!isAllowedKey || key.includes('\\') || key.includes('\0')) {
     return null;
   }
