@@ -10,6 +10,10 @@ import {
   validateCandidateEnvelope,
   validateMirrorReceipt,
 } from './release-platform-checkpoint.mjs';
+import {
+  validateLegacyBridgeCompatibilityBinding,
+  validateLegacyBridgeHold,
+} from './windows-legacy-bridge-contract.mjs';
 
 export const SCHEMA = 'flowzero.update_platform_manifest.v1';
 
@@ -42,6 +46,25 @@ export function buildPlatformChannelManifest({
   assert(typeof resolvedNotes === 'string' && resolvedNotes.trim(), 'notes must be a non-empty string');
   assert(!Number.isNaN(Date.parse(publishedAt)), 'publishedAt is invalid');
   const payload = candidate.candidate;
+  let legacyBridge = null;
+  if (payload.update?.windows_legacy_bridge !== undefined) {
+    const evidence = checkpoint.checkpoint.windows_legacy_bridge;
+    assert(evidence, 'platform channel is missing Windows legacy bridge evidence');
+    const hold = validateLegacyBridgeHold(evidence.hold);
+    const binding = validateLegacyBridgeCompatibilityBinding(evidence.binding, {
+      hold,
+      targetCandidate: candidate,
+    });
+    legacyBridge = {
+      schema: 'flowzero.windows_legacy_bridge_publication_ref.v1',
+      binding_id: binding.binding_id,
+      bridge_hold_id: hold.hold_id,
+      bridge_tag: hold.hold.bridge.tag,
+      affected_versions: [...hold.hold.affected_versions],
+    };
+  } else {
+    assert(checkpoint.checkpoint.windows_legacy_bridge === undefined, 'unbound platform channel contains Windows legacy bridge evidence');
+  }
   return {
     schema: SCHEMA,
     channel: payload.release.channel,
@@ -57,6 +80,7 @@ export function buildPlatformChannelManifest({
     source_head_sha: payload.source.head_sha,
     assets: payload.assets,
     update: payload.update,
+    ...(legacyBridge ? { windows_legacy_bridge: legacyBridge } : {}),
     verified_mirrors: checkpoint.checkpoint.mirror_receipt.origins.map((origin) => ({
       origin: origin.origin,
       object_count: origin.objects.length,

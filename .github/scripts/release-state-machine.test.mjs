@@ -205,9 +205,11 @@ function recoveryProvenance({
   verificationRunId = '123',
   candidateArtifactId = '456',
   verificationArtifactId = '789',
+  platform = 'macos-arm64',
 } = {}) {
   return {
     schema: 'flowzero.actions_artifact_provenance.v1',
+    platform,
     candidate: { run_id: sourceRunId, artifact_id: candidateArtifactId },
     verification: { run_id: verificationRunId, artifact_id: verificationArtifactId },
   };

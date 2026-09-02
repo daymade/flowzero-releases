@@ -86,6 +86,8 @@ Then compare it with the SHA-256 in the platform channel manifest or the optiona
 `Beta` releases are published as GitHub Pre-releases.
 Promotion is serialized per channel and platform. The canonical tag, current platform version, current-main tombstone policy, content-addressed candidate, and native platform receipt are checked before external writes.
 
+Windows compatibility bridges use a separate qualification-hold lane. A held bridge is content-addressed under `channels/<channel>/platforms/windows-x64/legacy-bridges/<tag>/`, and the hold workflow proves the ordinary `current.json` pointer is byte-for-byte unchanged. A hold is not a published release: it has no promotion, canary, or GitHub archive path. A later Windows target that declares a bridge requirement cannot advance `current.json` until its exact immutable hold and a content-addressed old → bridge → target acceptance binding are validated; promotion still performs one platform-pointer CAS.
+
 `Initialize Empty Platform Channel` is only for a platform that has never had a pointer or published snapshot. An existing platform is cleared after an authorized withdrawal only through `Withdraw Platform Channel`, which requires the current tag to be tombstoned and uses ETag CAS.
 
 Withdrawn tags are immutable historical facts in the

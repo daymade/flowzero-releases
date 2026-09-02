@@ -87,7 +87,7 @@ export function validateAssetDirectory(candidateEnvelope, assetRoot) {
   return { candidate, files };
 }
 
-function ensureOssutil(env) {
+export function ensureOssutil(env) {
   const archive = path.join(env.RUNNER_TEMP, `ossutil-${OSSUTIL_VERSION}-linux-amd64.zip`);
   const root = path.join(env.RUNNER_TEMP, `ossutil-${OSSUTIL_VERSION}-linux-amd64`);
   const binary = path.join(root, 'ossutil');
@@ -104,7 +104,7 @@ function ensureOssutil(env) {
   return binary;
 }
 
-function ossArgs(env) {
+export function ossArgs(env) {
   return [
     '--access-key-id', env.ALIYUN_OSS_ACCESS_KEY_ID,
     '--access-key-secret', env.ALIYUN_OSS_ACCESS_KEY_SECRET,
@@ -114,6 +114,17 @@ function ossArgs(env) {
     '--ignore-env-var',
     '--user-agent', 'flowzero-release-ci',
   ];
+}
+
+export function assertImmutableMirrorStorage(binary, env) {
+  const versioning = parseJsonResult(run(binary, [
+    'api', 'get-bucket-versioning',
+    '--bucket', env.ALIYUN_OSS_BUCKET,
+    '--output-format', 'json',
+    '--quiet',
+    ...ossArgs(env),
+  ]), 'OSS bucket versioning');
+  assertOssBucketUnversioned(versioning);
 }
 
 function parseJsonResult(result, label) {
@@ -154,7 +165,7 @@ export function r2Head(env, objectKey) {
   return result.status === 0 ? parseJsonResult(result, 'R2 head-object') : null;
 }
 
-function mirrorToR2(env, asset, objectKey) {
+export function mirrorToR2(env, asset, objectKey) {
   let head = r2Head(env, objectKey);
   if (!head) {
     const upload = run('aws', [
@@ -232,7 +243,7 @@ function headerValue(payload, name) {
   return key ? headers[key]?.[0] : null;
 }
 
-function mirrorToOss(binary, env, asset, objectKey) {
+export function mirrorToOss(binary, env, asset, objectKey) {
   let head = ossHead(binary, env, objectKey);
   if (!head) {
     const upload = run(binary, buildOssPutObjectArgs(env, asset, objectKey), {
@@ -310,14 +321,7 @@ export async function main(argv = process.argv.slice(2), envInput = process.env)
     repository: env.GITHUB_REPOSITORY,
   });
   const binary = ensureOssutil(env);
-  const versioning = parseJsonResult(run(binary, [
-    'api', 'get-bucket-versioning',
-    '--bucket', env.ALIYUN_OSS_BUCKET,
-    '--output-format', 'json',
-    '--quiet',
-    ...ossArgs(env),
-  ]), 'OSS bucket versioning');
-  assertOssBucketUnversioned(versioning);
+  assertImmutableMirrorStorage(binary, env);
   const tag = candidate.candidate.release.tag;
   const r2Objects = [];
   const ossObjects = [];

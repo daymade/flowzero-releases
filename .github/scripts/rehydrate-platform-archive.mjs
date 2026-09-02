@@ -119,6 +119,16 @@ export function main(argv = process.argv.slice(2), env = process.env) {
     path.join(evidenceRoot, 'candidate.json'),
     `${JSON.stringify(platformEntry.candidate, null, 2)}\n`,
   );
+  if (platformEntry.windows_legacy_bridge) {
+    writeFileSync(
+      path.join(evidenceRoot, 'compatibility-binding.json'),
+      `${JSON.stringify(platformEntry.windows_legacy_bridge.binding, null, 2)}\n`,
+    );
+    writeFileSync(
+      path.join(evidenceRoot, 'bridge-hold.json'),
+      `${JSON.stringify(platformEntry.windows_legacy_bridge.hold, null, 2)}\n`,
+    );
+  }
   writeFileSync(
     path.join(evidenceRoot, 'verification.json'),
     `${JSON.stringify(platformEntry.verification, null, 2)}\n`,
@@ -135,4 +145,3 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
     process.exitCode = 1;
   }
 }
-

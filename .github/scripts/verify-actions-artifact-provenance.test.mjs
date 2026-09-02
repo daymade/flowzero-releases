@@ -32,6 +32,7 @@ function inputs(overrides = {}) {
     verificationRunId: '22',
     candidateArtifactId: '101',
     verificationArtifactId: '202',
+    platform: 'macos-arm64',
     toolkitSha,
     ...overrides,
   };
@@ -77,4 +78,42 @@ test('accepts an original release verification artifact from the same source run
     },
   }));
   assert.equal(result.verification.run_id, '11');
+});
+
+test('accepts Windows artifacts from the original release run without macOS name hardcoding', () => {
+  const result = validateActionsArtifactProvenance(inputs({
+    platform: 'windows-x64',
+    candidateArtifact: {
+      id: 101,
+      name: 'windows-final-transaction-1',
+      expired: false,
+      workflow_run: { id: 11 },
+    },
+    verificationRunId: '11',
+    verificationArtifact: {
+      id: 202,
+      name: 'windows-verification-transaction-1',
+      expired: false,
+      workflow_run: { id: 11 },
+    },
+    verificationRun: {
+      id: 11,
+      path: '.github/workflows/release.yml',
+      event: 'repository_dispatch',
+      head_branch: 'main',
+      head_sha: 'c'.repeat(40),
+      status: 'completed',
+      conclusion: 'failure',
+      run_attempt: 1,
+    },
+  }));
+  assert.equal(result.candidate.name, 'windows-final-transaction-1');
+  assert.equal(result.verification.name, 'windows-verification-transaction-1');
+});
+
+test('rejects macOS artifact names on a Windows recovery route', () => {
+  assert.throws(
+    () => validateActionsArtifactProvenance(inputs({ platform: 'windows-x64' })),
+    /candidate artifact name is invalid/u,
+  );
 });

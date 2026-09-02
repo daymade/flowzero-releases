@@ -6,6 +6,11 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { canonicalJson } from './release-transaction.mjs';
 import { parseProjectReleaseTag } from './release-tag-contract.mjs';
+import {
+  validateLegacyBridgeCompatibilityBinding,
+  validateLegacyBridgeHold,
+  validateLegacyBridgeRequirement,
+} from './windows-legacy-bridge-contract.mjs';
 
 export const CHECKPOINT_SCHEMA = 'flowzero.release_platform_checkpoint.v1';
 export const CANDIDATE_SCHEMA = 'flowzero.release_platform_candidate.v1';
@@ -263,6 +268,12 @@ export function validateCandidateEnvelope(envelope) {
       && columns[2] === String(nupkg.size),
       'candidate Windows RELEASES does not bind the exact nupkg',
     );
+    if (candidate.update?.windows_legacy_bridge !== undefined) {
+      validateLegacyBridgeRequirement(
+        candidate.update.windows_legacy_bridge,
+        candidate.release.version,
+      );
+    }
   }
   assert(hashEnvelope(candidate) === envelope.candidate_id, 'candidate content hash is invalid');
   return JSON.parse(JSON.stringify(envelope));
@@ -450,6 +461,8 @@ export function buildPlatformCheckpoint({
   parent = null,
   verifications = [],
   mirrorReceipt = null,
+  legacyBridgeBinding = null,
+  legacyBridgeHold = null,
   createdAt = new Date().toISOString(),
 }) {
   assert(PHASES.includes(phase), `unsupported checkpoint phase: ${phase}`);
@@ -467,6 +480,19 @@ export function buildPlatformCheckpoint({
   } else {
     assert(mirrorReceipt === null, `${phase} checkpoint cannot contain a mirror receipt`);
   }
+  const requirement = candidate.candidate.update?.windows_legacy_bridge;
+  let legacyBridgeEvidence = null;
+  if (phase === 'mirrored' && requirement !== undefined) {
+    assert(legacyBridgeBinding !== null && legacyBridgeHold !== null, 'mirrored Windows bridge target requires binding and hold evidence');
+    const hold = validateLegacyBridgeHold(legacyBridgeHold);
+    const binding = validateLegacyBridgeCompatibilityBinding(legacyBridgeBinding, {
+      hold,
+      targetCandidate: candidate,
+    });
+    legacyBridgeEvidence = { binding, hold };
+  } else {
+    assert(legacyBridgeBinding === null && legacyBridgeHold === null, `${phase} checkpoint cannot contain Windows bridge evidence`);
+  }
   assert(!Number.isNaN(Date.parse(createdAt)), 'checkpoint created_at is invalid');
   const checkpoint = {
     transaction_id: candidate.candidate.transaction_id,
@@ -477,6 +503,7 @@ export function buildPlatformCheckpoint({
     candidate,
     verifications: validatedVerifications,
     mirror_receipt: validatedMirrorReceipt,
+    ...(legacyBridgeEvidence ? { windows_legacy_bridge: legacyBridgeEvidence } : {}),
     created_at: createdAt,
   };
   return {
@@ -502,7 +529,7 @@ function parseArguments(argv) {
     if (!value) throw new Error(`${key || '<empty>'} requires a value`);
     if (key === '--verification') {
       values.verifications.push(value);
-    } else if (['--phase', '--candidate', '--parent', '--mirror-receipt', '--output'].includes(key)) {
+    } else if (['--phase', '--candidate', '--parent', '--mirror-receipt', '--legacy-bridge-binding', '--legacy-bridge-hold', '--output'].includes(key)) {
       if (values[key]) throw new Error(`duplicate argument: ${key}`);
       values[key] = value;
     } else {
@@ -528,12 +555,20 @@ export async function main(argv = process.argv.slice(2)) {
   const mirrorReceipt = args['--mirror-receipt']
     ? JSON.parse(await readFile(path.resolve(args['--mirror-receipt']), 'utf8'))
     : null;
+  const legacyBridgeBinding = args['--legacy-bridge-binding']
+    ? JSON.parse(await readFile(path.resolve(args['--legacy-bridge-binding']), 'utf8'))
+    : null;
+  const legacyBridgeHold = args['--legacy-bridge-hold']
+    ? JSON.parse(await readFile(path.resolve(args['--legacy-bridge-hold']), 'utf8'))
+    : null;
   const result = buildPlatformCheckpoint({
     phase: args['--phase'],
     candidate,
     parent,
     verifications,
     mirrorReceipt,
+    legacyBridgeBinding,
+    legacyBridgeHold,
   });
   await atomicWriteJson(args['--output'], result);
   process.stdout.write(`${result.checkpoint_id}\n`);

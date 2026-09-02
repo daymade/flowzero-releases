@@ -10,6 +10,7 @@ import {
   canonicalJson,
   validateReleaseIntent,
 } from './release-transaction.mjs';
+import { claimNormalReleaseTagArbitration } from './windows-legacy-bridge-reservation.mjs';
 
 export const TRANSACTION_OWNER_SCHEMA = 'flowzero.release_transaction_owner.v1';
 
@@ -146,6 +147,11 @@ export function claimReleaseTransaction(transaction, {
 } = {}) {
   const config = requiredEnvironment(env);
   const claim = buildTransactionOwnerClaim(transaction);
+  claimNormalReleaseTagArbitration({
+    schema: TRANSACTION_SCHEMA,
+    transaction_id: claim.transaction_id,
+    intent: claim.intent,
+  }, { env: config, run: runCommand });
   const transactionHex = claim.transaction_id.slice('sha256:'.length);
   const objectKey = `release-control/releases/${claim.intent.release.tag}/owner.json`;
   const claimBody = `${canonicalJson(claim)}\n`;

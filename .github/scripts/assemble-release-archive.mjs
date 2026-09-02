@@ -57,6 +57,14 @@ export function main(argv = process.argv.slice(2)) {
     return {
       candidate: JSON.parse(readFileSync(candidatePath, 'utf8')),
       verification: JSON.parse(readFileSync(verificationPath, 'utf8')),
+      ...(existsSync(path.join(platformRoot, 'verification', 'compatibility-binding.json'))
+        ? {
+          windowsLegacyBridge: {
+            binding: JSON.parse(readFileSync(path.join(platformRoot, 'verification', 'compatibility-binding.json'), 'utf8')),
+            hold: JSON.parse(readFileSync(path.join(platformRoot, 'verification', 'bridge-hold.json'), 'utf8')),
+          },
+        }
+        : {}),
       artifactsRoot: path.join(platformRoot, 'final', 'artifacts'),
     };
   });

@@ -35,6 +35,7 @@ export function validatePlatformArtifactRecovery({
   assert(['macos-arm64', 'windows-x64'].includes(platform), 'recovery platform is invalid');
   assert(
     actionsProvenance?.schema === 'flowzero.actions_artifact_provenance.v1'
+    && actionsProvenance.platform === platform
     && actionsProvenance.candidate?.run_id === String(sourceRunId)
     && actionsProvenance.candidate?.artifact_id === String(candidateArtifactId)
     && actionsProvenance.verification?.run_id === String(verificationRunId)

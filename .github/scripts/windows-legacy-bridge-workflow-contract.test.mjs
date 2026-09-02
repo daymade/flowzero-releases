@@ -1,0 +1,132 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+
+const holdWorkflow = await readFile(
+  new URL('../workflows/qualify-windows-legacy-bridge.yml', import.meta.url),
+  'utf8',
+);
+const releaseWorkflow = await readFile(new URL('../workflows/release.yml', import.meta.url), 'utf8');
+const mirrorScript = await readFile(new URL('./mirror-windows-legacy-bridge.mjs', import.meta.url), 'utf8');
+const contractScript = await readFile(new URL('./windows-legacy-bridge-contract.mjs', import.meta.url), 'utf8');
+const promoteScript = await readFile(new URL('./promote-platform-channel.mjs', import.meta.url), 'utf8');
+
+function jobBlock(workflow, name) {
+  const marker = `  ${name}:\n`;
+  const start = workflow.indexOf(marker);
+  assert.ok(start >= 0, `missing workflow job: ${name}`);
+  const tail = workflow.slice(start + marker.length);
+  const next = tail.search(/^  [a-z0-9-]+:\n/mu);
+  return next < 0 ? workflow.slice(start) : workflow.slice(start, start + marker.length + next);
+}
+
+test('qualification hold has an explicit Windows-only DAG and pinned external actions', () => {
+  const uses = [...holdWorkflow.matchAll(/^\s+uses:\s+([^\s#]+)/gmu)].map((match) => match[1]);
+  assert.ok(uses.length > 0);
+  for (const value of uses.filter((entry) => !entry.startsWith('./'))) {
+    assert.match(value, /^[^@]+@[a-f0-9]{40}$/u, `un-pinned hold action: ${value}`);
+  }
+  assert.match(holdWorkflow, /types: \[windows_legacy_bridge_qualification\]/u);
+  assert.match(holdWorkflow, /operation: 'legacy_bridge'|windows-legacy-bridge-contract\.mjs build-intent/u);
+  assert.match(holdWorkflow, /--bridge-version/u);
+  assert.match(holdWorkflow, /windows-2025/u);
+  assert.doesNotMatch(holdWorkflow, /macos-arm64/u);
+  assert.match(jobBlock(holdWorkflow, 'build-bridge'), /needs: prepare-hold-intent/u);
+  assert.match(jobBlock(holdWorkflow, 'accept-bridge'), /needs: \[prepare-hold-intent, build-bridge\]/u);
+  assert.match(jobBlock(holdWorkflow, 'mirror-to-hold'), /needs: \[prepare-hold-intent, build-bridge, accept-bridge\]/u);
+  assert.match(
+    jobBlock(holdWorkflow, 'mirror-to-hold'),
+    /group: flowzero-promote-\$\{\{ needs\.prepare-hold-intent\.outputs\.channel \}\}-windows-x64/u,
+  );
+});
+
+test('manual hold inputs reach shell only through environment variables', () => {
+  const runBlocks = [...holdWorkflow.matchAll(/^\s{8}run: [>|]-?\n((?:\s{10,}.*\n)*)/gmu)]
+    .map((match) => match[1]);
+  assert.ok(runBlocks.length > 0);
+  for (const block of runBlocks) {
+    assert.doesNotMatch(block, /\$\{\{\s*inputs\./u);
+  }
+  for (const name of [
+    'INPUT_SOURCE_HEAD_SHA',
+    'INPUT_BRIDGE_VERSION',
+    'INPUT_AFFECTED_VERSIONS_JSON',
+    'INPUT_TARGET_VERSION',
+    'INPUT_TARGET_FEED_URL',
+    'INPUT_TARGET_SETUP_URL',
+    'INPUT_TRANSACTION_ID',
+  ]) {
+    assert.match(holdWorkflow, new RegExp(`${name}: \\$\\{\\{ inputs\\.`, 'u'));
+  }
+});
+
+test('hold workflow delegates build and verification to exactly the canonical source entrypoints', () => {
+  assert.equal((holdWorkflow.match(/pnpm run release:build:windows-legacy-bridge:ci --/gu) || []).length, 1);
+  assert.equal((holdWorkflow.match(/pnpm run release:verify:windows-legacy-bridge:ci --/gu) || []).length, 1);
+  assert.match(holdWorkflow, /missing canonical bridge build script/u);
+  assert.match(holdWorkflow, /missing canonical bridge verification script/u);
+  assert.match(holdWorkflow, /validate-candidate/u);
+  assert.match(holdWorkflow, /validate-verification/u);
+  assert.match(holdWorkflow, /FLOWZERO_LEGACY_BRIDGE_TARGET_VERSION/u);
+  assert.match(holdWorkflow, /FLOWZERO_LEGACY_BRIDGE_TARGET_FEED_URL/u);
+  assert.match(holdWorkflow, /FLOWZERO_LEGACY_BRIDGE_TARGET_SETUP_URL/u);
+});
+
+test('qualification hold has no promotion, canary, archive, or normal release namespace escape', () => {
+  for (const forbidden of [
+    'promote-update-channel',
+    'promote-platform-channel.mjs',
+    'verify-channel-canary.mjs',
+    'archive-release.mjs',
+    'release-platform-checkpoint.mjs',
+    'generate-platform-channel-manifest.mjs',
+  ]) {
+    assert.doesNotMatch(holdWorkflow, new RegExp(forbidden.replace('.', '\\.'), 'u'));
+  }
+  assert.doesNotMatch(mirrorScript, /putCurrentJson|promotePlatform|archiveRelease/u);
+  assert.match(mirrorScript, /legacy-bridges/u);
+  assert.match(mirrorScript, /assertCurrentPointerUnchanged\(currentBefore, currentAfterAssets\)/u);
+  assert.match(mirrorScript, /assertCurrentPointerUnchanged\(currentBefore, currentAfterCheckpoint\)/u);
+  assert.ok(
+    mirrorScript.indexOf('assertCurrentPointerUnchanged(currentBefore, currentAfterCheckpoint)')
+      < mirrorScript.indexOf('atomicWriteJson(holdPath, finalState.hold)'),
+    'hold can be published before the final current.json proof',
+  );
+  assert.match(mirrorScript, /channels\/\$\{candidate\.candidate\.bridge\.channel\}\/platforms\/windows-x64\/current\.json/u);
+});
+
+test('hold and binding schemas are explicit and content-addressed', () => {
+  for (const schema of [
+    'flowzero.windows_legacy_bridge_intent.v1',
+    'flowzero.windows_legacy_bridge_candidate.v1',
+    'flowzero.windows_legacy_bridge_verification.v1',
+    'flowzero.windows_legacy_bridge_checkpoint.v1',
+    'flowzero.windows_legacy_bridge_hold.v1',
+    'flowzero.windows_legacy_bridge_compatibility_binding.v1',
+    'flowzero.windows_legacy_bridge_two_hop_acceptance.v1',
+  ]) {
+    assert.match(contractScript, new RegExp(schema.replaceAll('.', '\\.'), 'u'));
+  }
+  assert.match(contractScript, /binding_id: contentId\(binding\)/u);
+  assert.match(contractScript, /hold_id: contentId\(hold\)/u);
+  assert.match(contractScript, /checkpoint_id: contentId\(checkpoint\)/u);
+});
+
+test('normal Windows release fails closed on declared compatibility and promotes with one current CAS', () => {
+  const mirror = jobBlock(releaseWorkflow, 'mirror-windows');
+  const promote = jobBlock(releaseWorkflow, 'promote-windows');
+  assert.match(mirror, /validate-windows-legacy-bridge-promotion\.mjs/u);
+  assert.match(mirror, /compatibility-binding\.json/u);
+  assert.match(mirror, /bridge-hold\.json/u);
+  assert.match(promote, /compatibility-binding:/u);
+  assert.match(promote, /bridge-hold:/u);
+  assert.match(promoteScript, /assertWindowsLegacyBridgePromotionReady/u);
+  assert.match(releaseWorkflow, /--windows-legacy-bridge-hold-id/u);
+  assert.match(releaseWorkflow, /--windows-legacy-bridge-tag/u);
+  assert.match(releaseWorkflow, /--windows-legacy-bridge-affected-version/u);
+  const acceptance = jobBlock(releaseWorkflow, 'accept-windows');
+  assert.match(acceptance, /materialize-windows-legacy-bridge\.mjs/u);
+  assert.match(acceptance, /release:verify:windows-legacy-bridge:ci --[\s\S]*--mode two-hop/u);
+  assert.match(acceptance, /windows-legacy-bridge-contract\.mjs build-binding/u);
+  assert.equal((promoteScript.match(/putCurrentJson\(env, currentKey,/gu) || []).length, 1);
+});

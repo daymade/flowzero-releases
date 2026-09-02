@@ -5,6 +5,7 @@ import { appendFile, readFile, rename, writeFile, mkdir } from 'node:fs/promises
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseProjectReleaseTag } from './release-tag-contract.mjs';
+import { validateLegacyBridgeRequirement } from './windows-legacy-bridge-contract.mjs';
 
 export const INTENT_SCHEMA = 'flowzero.release_intent.v1';
 export const TRANSACTION_SCHEMA = 'flowzero.release_transaction.v1';
@@ -24,7 +25,15 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-export function buildManualReleaseIntent({ version, headSha, platforms, variant }) {
+export function buildManualReleaseIntent({
+  version,
+  headSha,
+  platforms,
+  variant,
+  windowsLegacyBridgeHoldId = null,
+  windowsLegacyBridgeTag = null,
+  windowsLegacyBridgeAffectedVersionsJson = null,
+}) {
   const parsedTag = parseProjectReleaseTag(`v${version}`);
   assert(/^[a-f0-9]{40}$/.test(headSha || ''), 'manual release source SHA is invalid');
   assert(['macos-arm64', 'windows-x64', 'all'].includes(platforms), 'manual release platforms are invalid');
@@ -49,6 +58,23 @@ export function buildManualReleaseIntent({ version, headSha, platforms, variant 
       required_platforms: requestedPlatforms,
     },
   };
+  const bridgeInputs = [
+    windowsLegacyBridgeHoldId,
+    windowsLegacyBridgeTag,
+    windowsLegacyBridgeAffectedVersionsJson,
+  ];
+  if (bridgeInputs.some(Boolean)) {
+    assert(bridgeInputs.every(Boolean), 'manual Windows legacy bridge inputs must be supplied together');
+    assert(requestedPlatforms.includes('windows-x64'), 'manual Windows legacy bridge requires windows-x64');
+    identity.windows_legacy_bridge = validateLegacyBridgeRequirement({
+      schema: 'flowzero.windows_legacy_bridge_requirement.v1',
+      purpose: 'windows_legacy_bridge_v1',
+      mode: 'required',
+      bridge_hold_id: windowsLegacyBridgeHoldId,
+      bridge_tag: windowsLegacyBridgeTag,
+      affected_versions: JSON.parse(windowsLegacyBridgeAffectedVersionsJson),
+    }, parsedTag.version);
+  }
   return {
     ...identity,
     transaction_id: `sha256:${createHash('sha256').update(canonicalJson(identity)).digest('hex')}`,
@@ -71,6 +97,10 @@ export function releaseIntentFromEvent(event) {
     headSha: event.inputs?.head_sha,
     platforms: event.inputs?.platforms,
     variant: event.inputs?.variant,
+    windowsLegacyBridgeHoldId: event.inputs?.windows_legacy_bridge_hold_id || null,
+    windowsLegacyBridgeTag: event.inputs?.windows_legacy_bridge_tag || null,
+    windowsLegacyBridgeAffectedVersionsJson:
+      event.inputs?.windows_legacy_bridge_affected_versions_json || null,
   }));
   assert(event.inputs?.transaction_id === intent.transaction_id, 'manual release transaction ID mismatch');
   return intent;
@@ -93,6 +123,13 @@ export function validateReleaseIntent(input) {
     )),
     'release intent platforms must be unique and canonical',
   );
+  if (input.windows_legacy_bridge !== undefined) {
+    assert(
+      input.requested_platforms.includes('windows-x64'),
+      'Windows legacy bridge requirement requires windows-x64',
+    );
+    validateLegacyBridgeRequirement(input.windows_legacy_bridge, input.release.version);
+  }
   assert(new Set(input.requested_platforms).size === input.requested_platforms.length, 'release intent platforms are duplicated');
   assert(input.promotion_policy?.mode === 'platform_independent', 'release intent promotion policy is invalid');
   assert(input.archive_policy?.mode === 'eventual_bundle', 'release intent archive policy is invalid');
@@ -196,6 +233,11 @@ export async function main(argv = process.argv.slice(2)) {
       windows_requested: String(intent.requested_platforms.includes('windows-x64')),
       release_infra_sha: args['--release-infra-sha'],
       windows_nupkg_name: `Flowzero-${windowsPackageVersion}-full.nupkg`,
+      windows_legacy_bridge_required: String(intent.windows_legacy_bridge !== undefined),
+      windows_legacy_bridge_hold_id: intent.windows_legacy_bridge?.bridge_hold_id || '',
+      windows_legacy_bridge_tag: intent.windows_legacy_bridge?.bridge_tag || '',
+      windows_legacy_bridge_affected_versions_json:
+        intent.windows_legacy_bridge ? JSON.stringify(intent.windows_legacy_bridge.affected_versions) : '',
     };
     await appendFile(
       path.resolve(args['--github-output']),
