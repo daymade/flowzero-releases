@@ -100,6 +100,21 @@ test('qualification builds the bridge from the exact source shared with the plan
   assert.doesNotMatch(build, /packageVersion -ne/u);
 });
 
+test('bridge build and acceptance resolve pnpm from the exact private source package', () => {
+  for (const jobName of ['build-bridge', 'accept-bridge']) {
+    const job = jobBlock(holdWorkflow, jobName);
+    const setupPnpm = job.indexOf('- name: Setup pnpm');
+    const setupNode = job.indexOf('- name: Setup Node.js');
+    assert.ok(setupPnpm >= 0, `${jobName} is missing Setup pnpm`);
+    assert.ok(setupNode > setupPnpm, `${jobName} Setup Node.js must follow Setup pnpm`);
+    assert.match(
+      job.slice(setupPnpm, setupNode),
+      /package_json_file: flowzero\/package\.json/u,
+      `${jobName} must resolve pnpm from the exact checked-out source`,
+    );
+  }
+});
+
 test('qualification hold has no promotion, canary, archive, or normal release namespace escape', () => {
   for (const forbidden of [
     'promote-update-channel',
