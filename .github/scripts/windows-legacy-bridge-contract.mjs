@@ -673,16 +673,26 @@ export function buildLegacyBridgeCompatibilityBinding({ hold: rawHold, targetCan
     }
     const preservation = route.user_data_preservation;
     assert(
-      preservation?.schema === 'flowzero.windows_update_user_data_preservation.v1'
-        && preservation.scope === 'isolated_app_user_data'
+      preservation?.schema === 'flowzero.windows_update_user_data_preservation.v2'
+        && preservation.scope === 'isolated_production_profile'
         && preservation.seeded_before_first_hop === true
-        && Number.isSafeInteger(preservation.file_count)
-        && preservation.file_count > 0
-        && Number.isSafeInteger(preservation.byte_count)
-        && preservation.byte_count > 0
-        && /^[a-f0-9]{64}$/u.test(preservation.before_sha256 || '')
-        && preservation.after_sha256 === preservation.before_sha256
-        && preservation.preserved === true,
+        && preservation.source_version === version
+        && /^[a-f0-9]{40}$/u.test(preservation.source_schema_commit || '')
+        && /^[a-f0-9]{64}$/u.test(preservation.source_schema_fixture_sha256 || '')
+        && preservation.initial_migration_count === 24
+        && Number.isSafeInteger(preservation.final_migration_count)
+        && preservation.final_migration_count >= preservation.initial_migration_count
+        && preservation.final_migration === '041_add_migration_receipts.js'
+        && /^[a-f0-9]{64}$/u.test(preservation.database_before_sha256 || '')
+        && /^[a-f0-9]{64}$/u.test(preservation.database_after_sha256 || '')
+        && /^[a-f0-9]{64}$/u.test(preservation.transcription_text_sha256 || '')
+        && /^[a-f0-9]{64}$/u.test(preservation.recording_before_sha256 || '')
+        && preservation.recording_after_sha256 === preservation.recording_before_sha256
+        && preservation.production_runtime_profile === true
+        && preservation.database_migrated === true
+        && preservation.transcription_preserved === true
+        && preservation.settings_preserved === true
+        && preservation.recording_preserved === true,
       `two-hop acceptance user data preservation evidence is incomplete: ${version}`,
     );
   }

@@ -80,12 +80,16 @@ jobs:
           if [[ -f "$RUNNER_TEMP/rehydrated/evidence/release-transaction.json" ]]; then
             transaction_args+=(--transaction "$RUNNER_TEMP/rehydrated/evidence/release-transaction.json")
           fi
+          verification_args=(--verification "$RUNNER_TEMP/rehydrated/evidence/verification.json")
+          if [[ -f "$RUNNER_TEMP/rehydrated/evidence/live-stepfun-timeline.json" ]]; then
+            verification_args+=(--verification "$RUNNER_TEMP/rehydrated/evidence/live-stepfun-timeline.json")
+          fi
           node .github/scripts/release-platform-checkpoint.mjs \
             --phase platform_verified \
             --candidate "$RUNNER_TEMP/rehydrated/evidence/candidate.json" \
             "${transaction_args[@]}" \
             --parent "$RUNNER_TEMP/state/build-created.json" \
-            --verification "$RUNNER_TEMP/rehydrated/evidence/verification.json" \
+            "${verification_args[@]}" \
             --output "$RUNNER_TEMP/state/platform-verified.json"
 
       - name: Reject an unapproved downgrade before mirror repair
@@ -135,12 +139,16 @@ jobs:
           if [[ -f "$RUNNER_TEMP/rehydrated/evidence/release-transaction.json" ]]; then
             transaction_args+=(--transaction "$RUNNER_TEMP/rehydrated/evidence/release-transaction.json")
           fi
+          verification_args=(--verification "$RUNNER_TEMP/rehydrated/evidence/verification.json")
+          if [[ -f "$RUNNER_TEMP/rehydrated/evidence/live-stepfun-timeline.json" ]]; then
+            verification_args+=(--verification "$RUNNER_TEMP/rehydrated/evidence/live-stepfun-timeline.json")
+          fi
           node .github/scripts/release-platform-checkpoint.mjs \
             --phase mirrored \
             --candidate "$RUNNER_TEMP/rehydrated/evidence/candidate.json" \
             "${transaction_args[@]}" \
             --parent "$RUNNER_TEMP/state/platform-verified.json" \
-            --verification "$RUNNER_TEMP/rehydrated/evidence/verification.json" \
+            "${verification_args[@]}" \
             --mirror-receipt "$RUNNER_TEMP/state/mirror-receipt.json" \
             "${bridge_args[@]}" \
             --output "$RUNNER_TEMP/state/mirrored.json"

@@ -11,7 +11,7 @@ import {
 import {
   validateCandidateAgainstTransaction,
   validateCandidateEnvelope,
-  validateVerificationReceipt,
+  validateVerificationSet,
 } from './release-platform-checkpoint.mjs';
 import {
   validateLegacyBridgeCompatibilityBinding,
@@ -30,7 +30,9 @@ export function buildReleaseArchiveManifest({ transaction, entries }) {
   const byPlatform = new Map();
   for (const entry of entries) {
     const candidate = validateCandidateEnvelope(entry.candidate);
-    const verification = validateVerificationReceipt(entry.verification, candidate);
+    const rawVerifications = entry.verifications
+      ?? (entry.verification === undefined ? [] : [entry.verification]);
+    const verifications = validateVerificationSet(rawVerifications, candidate);
     const platform = candidate.candidate.platform;
     assert(!byPlatform.has(platform), `duplicate archive platform: ${platform}`);
     validateCandidateAgainstTransaction(candidate, transaction);
@@ -46,7 +48,7 @@ export function buildReleaseArchiveManifest({ transaction, entries }) {
     } else {
       assert(entry.windowsLegacyBridge === undefined, 'archive contains unexpected Windows bridge evidence');
     }
-    byPlatform.set(platform, { candidate, verification, windowsLegacyBridge });
+    byPlatform.set(platform, { candidate, verifications, windowsLegacyBridge });
   }
   const requested = transaction.intent.requested_platforms;
   assert(
@@ -67,7 +69,7 @@ export function buildReleaseArchiveManifest({ transaction, entries }) {
       return {
         platform,
         candidate: entry.candidate,
-        verification: entry.verification,
+        verifications: entry.verifications,
         ...(entry.windowsLegacyBridge ? { windows_legacy_bridge: entry.windowsLegacyBridge } : {}),
       };
     }),
@@ -121,7 +123,13 @@ export function validateReleaseArchiveManifest(manifest) {
       );
     }
     if (releaseTransaction) validateCandidateAgainstTransaction(candidate, releaseTransaction);
-    validateVerificationReceipt(entry.verification, candidate);
+    const rawVerifications = entry.verifications
+      ?? (entry.verification === undefined ? [] : [entry.verification]);
+    assert(
+      !(entry.verifications !== undefined && entry.verification !== undefined),
+      'release archive verification projection is ambiguous',
+    );
+    validateVerificationSet(rawVerifications, candidate);
     if (candidate.candidate.update?.windows_legacy_bridge !== undefined) {
       assert(entry.windows_legacy_bridge, 'release archive Windows bridge evidence is missing');
       const hold = validateLegacyBridgeHold(entry.windows_legacy_bridge.hold);
@@ -174,7 +182,7 @@ export async function main(argv = process.argv.slice(2)) {
   const transaction = JSON.parse(await readFile(path.resolve(args['--transaction']), 'utf8'));
   const entries = await Promise.all(args.candidates.map(async (candidatePath, index) => ({
     candidate: JSON.parse(await readFile(path.resolve(candidatePath), 'utf8')),
-    verification: JSON.parse(await readFile(path.resolve(args.verifications[index]), 'utf8')),
+    verifications: [JSON.parse(await readFile(path.resolve(args.verifications[index]), 'utf8'))],
   })));
   const result = buildReleaseArchiveManifest({ transaction, entries });
   await atomicWriteJson(args['--output'], result);

@@ -256,14 +256,25 @@ function acceptance(hold = bridgeHold(), target = targetCandidate(hold)) {
     routes: [{
       from_version: '0.1.2-beta.7',
       user_data_preservation: {
-        schema: 'flowzero.windows_update_user_data_preservation.v1',
-        scope: 'isolated_app_user_data',
+        schema: 'flowzero.windows_update_user_data_preservation.v2',
+        scope: 'isolated_production_profile',
         seeded_before_first_hop: true,
-        file_count: 3,
-        byte_count: 256,
-        before_sha256: digest('8'),
-        after_sha256: digest('8'),
-        preserved: true,
+        source_version: '0.1.2-beta.7',
+        source_schema_commit: sourceSha,
+        source_schema_fixture_sha256: digest('1'),
+        initial_migration_count: 24,
+        final_migration_count: 41,
+        final_migration: '041_add_migration_receipts.js',
+        database_before_sha256: digest('2'),
+        database_after_sha256: digest('3'),
+        transcription_text_sha256: digest('4'),
+        recording_before_sha256: digest('5'),
+        recording_after_sha256: digest('5'),
+        production_runtime_profile: true,
+        database_migrated: true,
+        transcription_preserved: true,
+        settings_preserved: true,
+        recording_preserved: true,
       },
       hops: [
         { from_version: '0.1.2-beta.7', to_version: '0.1.3-beta.1', status: 'pass', complete_payload: true, payload_sha256_match: true, launch_verified: true, zero_process_residue: true },
@@ -566,7 +577,7 @@ test('binding rejects missing evidence, version inversions, discontinuities, cyc
   );
 
   const preservationChanged = acceptance(hold, target);
-  preservationChanged.routes[0].user_data_preservation.after_sha256 = digest('9');
+  preservationChanged.routes[0].user_data_preservation.recording_after_sha256 = digest('9');
   rehashAcceptance(preservationChanged);
   assert.throws(
     () => buildLegacyBridgeCompatibilityBinding({
@@ -732,7 +743,7 @@ test('mirrored checkpoint, platform manifest, and archive preserve exact bridge 
   const archivedEntry = mismatchedAttemptArchive.archive.platforms[0];
   archivedEntry.candidate.candidate.attempt.workflow_run_id = '999';
   archivedEntry.candidate.candidate_id = contentId(archivedEntry.candidate.candidate);
-  archivedEntry.verification.candidate_id = archivedEntry.candidate.candidate_id;
+  archivedEntry.verifications[0].candidate_id = archivedEntry.candidate.candidate_id;
   mismatchedAttemptArchive.archive_id = contentId(mismatchedAttemptArchive.archive);
   assert.throws(
     () => validateReleaseArchiveManifest(mismatchedAttemptArchive),

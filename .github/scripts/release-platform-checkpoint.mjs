@@ -96,11 +96,11 @@ export function validateCandidateAgainstTransaction(candidateEnvelope, rawTransa
   assert(canonicalJson(candidate.source) === canonicalJson(intent.source), 'candidate source does not match immutable release transaction');
   assert(canonicalJson(candidate.release) === canonicalJson(intent.release), 'candidate release does not match immutable release transaction');
   assert(
-    canonicalJson(candidate.attempt) === canonicalJson({
-      release_infrastructure_sha: transaction.attempt.release_infrastructure_sha,
-      workflow_run_id: transaction.attempt.workflow_run_id,
-      workflow_run_attempt: transaction.attempt.workflow_run_attempt,
-    }),
+    candidate.attempt.release_infrastructure_sha
+      === transaction.attempt.release_infrastructure_sha
+      && candidate.attempt.workflow_run_id === transaction.attempt.workflow_run_id
+      && candidate.attempt.workflow_run_attempt
+        >= transaction.attempt.workflow_run_attempt,
     'candidate attempt does not match immutable release transaction',
   );
   if (candidate.platform === 'windows-x64') {

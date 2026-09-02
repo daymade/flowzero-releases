@@ -441,6 +441,17 @@ jobs:
           cp apps/desktop/out/notarize-stage/apple-notary-log.json \
             "$RUNNER_TEMP/mac-final/evidence/apple-notary-log.json"
 
+      - name: Download immutable release transaction for Mac recovery
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.transaction_artifact_id }}
+          path: ${{ runner.temp }}/mac-transaction
+
+      - name: Bind immutable release transaction into the Mac candidate artifact
+        run: >-
+          cp "$RUNNER_TEMP/mac-transaction/release-transaction.json"
+          "$RUNNER_TEMP/mac-final/evidence/release-transaction.json"
+
       - name: Upload immutable final Mac candidate
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -917,6 +928,7 @@ jobs:
           node .github/scripts/release-platform-checkpoint.mjs
           --phase build_created
           --candidate "$RUNNER_TEMP/mac-final/evidence/candidate.json"
+          --transaction "$RUNNER_TEMP/mac-final/evidence/release-transaction.json"
           --output "$RUNNER_TEMP/mac-state/build-created.json"
 
       - name: Freeze business acceptance checkpoint
@@ -924,6 +936,7 @@ jobs:
           node .github/scripts/release-platform-checkpoint.mjs
           --phase platform_verified
           --candidate "$RUNNER_TEMP/mac-final/evidence/candidate.json"
+          --transaction "$RUNNER_TEMP/mac-final/evidence/release-transaction.json"
           --parent "$RUNNER_TEMP/mac-state/build-created.json"
           --verification "$RUNNER_TEMP/mac-verification/verification.json"
           --verification "$RUNNER_TEMP/mac-verification/live-stepfun-timeline.json"
@@ -967,6 +980,7 @@ jobs:
           node .github/scripts/release-platform-checkpoint.mjs
           --phase mirrored
           --candidate "$RUNNER_TEMP/mac-final/evidence/candidate.json"
+          --transaction "$RUNNER_TEMP/mac-final/evidence/release-transaction.json"
           --parent "$RUNNER_TEMP/mac-state/platform-verified.json"
           --verification "$RUNNER_TEMP/mac-verification/verification.json"
           --verification "$RUNNER_TEMP/mac-verification/live-stepfun-timeline.json"

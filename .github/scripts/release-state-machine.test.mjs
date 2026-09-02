@@ -572,7 +572,7 @@ test('archives the full candidate and verification contract for durable repair',
     candidate.candidate_id,
   );
   const tampered = structuredClone(archive);
-  tampered.archive.platforms[0].verification.evidence = [];
+  tampered.archive.platforms[0].verifications[0].evidence = [];
   tampered.archive_id = contentId(tampered.archive);
   assert.throws(() => validateReleaseArchiveManifest(tampered), /verification/u);
   const invalidTransaction = structuredClone(transaction);
@@ -816,6 +816,31 @@ test('macOS v2 requires distinct fixture and live StepFun verification receipts'
   }
 });
 
+test('macOS v2 archives preserve the complete verification receipt set', () => {
+  const releaseIntent = intent({
+    requested_platforms: ['macos-arm64'],
+    archive_policy: { mode: 'eventual_bundle', required_platforms: ['macos-arm64'] },
+  });
+  const transaction = transactionFor(releaseIntent);
+  const candidate = macCandidate(releaseIntent, { verificationContract: 'macos_voice_context_v2' });
+  const fixture = macVerification(candidate);
+  const live = macLiveVerification(candidate);
+  const archive = buildReleaseArchiveManifest({
+    transaction,
+    entries: [{ candidate, verifications: [fixture, live] }],
+  });
+  assert.deepEqual(
+    validateReleaseArchiveManifest(archive).archive.platforms[0].verifications.map(
+      (receipt) => receipt.suite,
+    ),
+    ['macos-voice-context', 'macos-live-stepfun-timeline'],
+  );
+  assert.throws(() => buildReleaseArchiveManifest({
+    transaction,
+    entries: [{ candidate, verifications: [fixture] }],
+  }), /requires 2 release verification receipt/u);
+});
+
 test('validates exact Windows Squirrel candidates under explicit unsigned or Authenticode policy', () => {
   const releaseIntent = intent();
   const transaction = transactionFor(releaseIntent);
@@ -911,6 +936,12 @@ test('validates exact Windows Squirrel candidates under explicit unsigned or Aut
     }),
     /attempt does not match immutable release transaction/u,
   );
+  const legitimateJobRerun = windowsCandidate(releaseIntent);
+  legitimateJobRerun.candidate.attempt.workflow_run_attempt = 2;
+  legitimateJobRerun.candidate_id = contentId(legitimateJobRerun.candidate);
+  assert.doesNotThrow(() => buildPlatformCheckpoint({
+    phase: 'build_created', candidate: legitimateJobRerun, transaction,
+  }));
   const duplicatedEvidence = windowsVerification(candidate);
   duplicatedEvidence.evidence.splice(1, 0, {
     ...duplicatedEvidence.evidence[0],

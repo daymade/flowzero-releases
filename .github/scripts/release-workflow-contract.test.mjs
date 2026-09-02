@@ -12,6 +12,14 @@ const promoteAction = await readFile(new URL('../actions/promote-update-channel/
 const mirrorScript = await readFile(new URL('./mirror-release-assets.mjs', import.meta.url), 'utf8');
 const promoteScript = await readFile(new URL('./promote-platform-channel.mjs', import.meta.url), 'utf8');
 const archiveScript = await readFile(new URL('./archive-release.mjs', import.meta.url), 'utf8');
+const assembleArchiveScript = await readFile(
+  new URL('./assemble-release-archive.mjs', import.meta.url),
+  'utf8',
+);
+const rehydrateArchiveScript = await readFile(
+  new URL('./rehydrate-platform-archive.mjs', import.meta.url),
+  'utf8',
+);
 const claimScript = await readFile(new URL('./claim-release-transaction.mjs', import.meta.url), 'utf8');
 const resumeMirrorWorkflow = await readFile(
   new URL('../workflows/resume-platform-mirror.yml', import.meta.url),
@@ -324,6 +332,17 @@ test('a failed mirror resumes from exact accepted artifacts without rebuilding',
     resumeMirrorWorkflow,
     /pnpm install|release:build:ci|electron-forge|notarytool|release-notarize-ci/u,
   );
+});
+
+test('current platform recovery preserves immutable transactions and complete Mac receipts', () => {
+  const macMirror = jobBlock('mirror-macos');
+  assert.equal((macMirror.match(/--transaction "\$RUNNER_TEMP\/mac-final\/evidence\/release-transaction\.json"/gu) || []).length, 3);
+  assert.match(workflow, /Bind immutable release transaction into the Mac candidate artifact/u);
+  assert.match(assembleArchiveScript, /live-stepfun-timeline\.json/u);
+  assert.match(assembleArchiveScript, /verifications: verificationPaths\.map/u);
+  assert.match(rehydrateArchiveScript, /live-stepfun-timeline\.json/u);
+  assert.match(operatorWorkflows[3], /verification_args=\(--verification/u);
+  assert.match(operatorWorkflows[3], /rehydrated\/evidence\/live-stepfun-timeline\.json/u);
 });
 
 test('a verifier-only macOS correction reuses one immutable candidate and emits a combined receipt set', () => {

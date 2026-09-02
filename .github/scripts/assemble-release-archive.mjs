@@ -51,12 +51,22 @@ export function main(argv = process.argv.slice(2)) {
   const entries = transaction.intent.requested_platforms.map((platform) => {
     const platformRoot = path.join(inputRoot, platform);
     const candidatePath = path.join(platformRoot, 'final', 'evidence', 'candidate.json');
-    const verificationPath = path.join(platformRoot, 'verification', 'verification.json');
+    const verificationRoot = path.join(platformRoot, 'verification');
+    const verificationPath = path.join(verificationRoot, 'verification.json');
     assert(existsSync(candidatePath), `archive candidate is missing for ${platform}`);
     assert(existsSync(verificationPath), `archive verification is missing for ${platform}`);
+    const candidate = JSON.parse(readFileSync(candidatePath, 'utf8'));
+    const verificationPaths = [verificationPath];
+    if (candidate.candidate?.verification_contract === 'macos_voice_context_v2') {
+      const liveVerificationPath = path.join(verificationRoot, 'live-stepfun-timeline.json');
+      assert(existsSync(liveVerificationPath), `archive live verification is missing for ${platform}`);
+      verificationPaths.push(liveVerificationPath);
+    }
     return {
-      candidate: JSON.parse(readFileSync(candidatePath, 'utf8')),
-      verification: JSON.parse(readFileSync(verificationPath, 'utf8')),
+      candidate,
+      verifications: verificationPaths.map((filePath) => (
+        JSON.parse(readFileSync(filePath, 'utf8'))
+      )),
       ...(existsSync(path.join(platformRoot, 'verification', 'compatibility-binding.json'))
         ? {
           windowsLegacyBridge: {

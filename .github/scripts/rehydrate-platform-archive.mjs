@@ -135,10 +135,17 @@ export function main(argv = process.argv.slice(2), env = process.env) {
       `${JSON.stringify(platformEntry.windows_legacy_bridge.hold, null, 2)}\n`,
     );
   }
-  writeFileSync(
-    path.join(evidenceRoot, 'verification.json'),
-    `${JSON.stringify(platformEntry.verification, null, 2)}\n`,
-  );
+  const verifications = platformEntry.verifications
+    ?? (platformEntry.verification === undefined ? [] : [platformEntry.verification]);
+  const verificationNames = new Map([
+    ['macos-live-stepfun-timeline', 'live-stepfun-timeline.json'],
+  ]);
+  for (const verification of verifications) {
+    const fileName = verificationNames.get(verification.suite) || 'verification.json';
+    const outputPath = path.join(evidenceRoot, fileName);
+    assert(!existsSync(outputPath), `archive verification output is duplicated: ${fileName}`);
+    writeFileSync(outputPath, `${JSON.stringify(verification, null, 2)}\n`);
+  }
   process.stdout.write(`rehydrated ${args['--tag']} ${args['--platform']} from immutable GitHub archive\n`);
   return platformEntry;
 }
