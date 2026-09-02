@@ -204,6 +204,31 @@ export function buildReleaseTransaction({
   };
 }
 
+export function validateReleaseTransaction(transaction) {
+  assert(transaction?.schema === TRANSACTION_SCHEMA, 'release transaction schema is invalid');
+  const intent = validateReleaseIntent(transaction.intent);
+  assert(transaction.transaction_id === intent.transaction_id, 'release transaction identity mismatch');
+  assert(
+    transaction.attempt?.release_infrastructure_repository === 'daymade/flowzero-releases',
+    'release transaction infrastructure repository is invalid',
+  );
+  assert(
+    /^[a-f0-9]{40}$/.test(transaction.attempt?.release_infrastructure_sha || ''),
+    'release transaction infrastructure SHA is invalid',
+  );
+  assert(
+    /^\d+$/.test(String(transaction.attempt?.workflow_run_id || '')),
+    'release transaction workflow run id is invalid',
+  );
+  assert(
+    Number.isSafeInteger(transaction.attempt?.workflow_run_attempt)
+      && transaction.attempt.workflow_run_attempt > 0,
+    'release transaction workflow run attempt is invalid',
+  );
+  assert(!Number.isNaN(Date.parse(transaction.created_at)), 'release transaction creation time is invalid');
+  return structuredClone({ ...transaction, intent });
+}
+
 async function atomicWriteJson(output, value) {
   const resolved = path.resolve(output);
   await mkdir(path.dirname(resolved), { recursive: true });

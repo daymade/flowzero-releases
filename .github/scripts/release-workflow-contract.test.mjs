@@ -141,6 +141,10 @@ test('Windows defaults to explicit unsigned delivery and gates certificate use b
   assert.match(windowsBuild, /--windows-signing-policy "\$\{\{ needs\.prepare\.outputs\.windows_signing_policy \}\}"/u);
   assert.match(windowsBuild, /needs\.prepare\.outputs\.windows_signing_policy == 'authenticode'/u);
   assert.match(
+    jobBlock('mirror-windows'),
+    /artifact-ids: \$\{\{ needs\.prepare\.outputs\.transaction_artifact_id \}\}[\s\S]*--transaction "\$RUNNER_TEMP\/windows-transaction\/release-transaction\.json"/u,
+  );
+  assert.match(
     windowsAcceptance,
     /--candidate-manifest "\$env:RUNNER_TEMP\/windows-final\/evidence\/candidate\.json"/u,
   );

@@ -665,6 +665,7 @@ export function buildLegacyBridgeCompatibilityBinding({ hold: rawHold, targetCan
         compareVersion(hop.from_version, hop.to_version) < 0
           && hop.status === 'pass'
           && hop.complete_payload === true
+          && hop.payload_sha256_match === true
           && hop.launch_verified === true
           && hop.zero_process_residue === true,
         `two-hop acceptance evidence is incomplete: ${hop.from_version}->${hop.to_version}`,

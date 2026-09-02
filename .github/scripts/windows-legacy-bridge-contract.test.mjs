@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import {
   buildManualReleaseIntent,
+  buildReleaseTransaction,
   canonicalJson,
   validateReleaseIntent,
 } from './release-transaction.mjs';
@@ -185,14 +186,38 @@ function bridgeHold(candidate = bridgeCandidate()) {
   }).hold;
 }
 
+function targetReleaseIntent(hold = bridgeHold()) {
+  return buildManualReleaseIntent({
+    version: hold.hold.target.version,
+    headSha: hold.hold.source_head_sha,
+    platforms: 'windows-x64',
+    variant: 'standard',
+    windowsSigningPolicy: hold.hold.windows_signing_policy,
+    windowsLegacyBridgeHoldId: hold.hold_id,
+    windowsLegacyBridgeTag: hold.hold.bridge.tag,
+    windowsLegacyBridgeAffectedVersionsJson: JSON.stringify(hold.hold.affected_versions),
+  });
+}
+
+function targetTransaction(hold = bridgeHold()) {
+  return buildReleaseTransaction({
+    intent: targetReleaseIntent(hold),
+    releaseInfrastructureSha: infraSha,
+    workflowRunId: '42',
+    workflowRunAttempt: 1,
+    createdAt: '2026-09-02T01:30:00.000Z',
+  });
+}
+
 function targetCandidate(hold = bridgeHold()) {
+  const releaseIntent = targetReleaseIntent(hold);
   const nupkg = 'Flowzero-0.1.3-beta2-full.nupkg';
   const candidate = {
-    transaction_id: `sha256:${digest('9')}`,
+    transaction_id: releaseIntent.transaction_id,
     platform: 'windows-x64',
     verification_contract: 'windows_installer_v2',
-    source: { repository: 'daymade/flowzero', head_sha: sourceSha },
-    release: { version: '0.1.3-beta.2', tag: 'v0.1.3-beta.2', channel: 'beta', variant: 'standard' },
+    source: releaseIntent.source,
+    release: releaseIntent.release,
     attempt: { release_infrastructure_sha: infraSha, workflow_run_id: '42', workflow_run_attempt: 1 },
     assets: [
       { role: 'windows_setup', name: 'Flowzero-0.1.3-beta.2-Setup.exe', content_type: 'application/vnd.microsoft.portable-executable', size: 310, sha256: digest('5') },
@@ -231,8 +256,8 @@ function acceptance(hold = bridgeHold(), target = targetCandidate(hold)) {
     routes: [{
       from_version: '0.1.2-beta.7',
       hops: [
-        { from_version: '0.1.2-beta.7', to_version: '0.1.3-beta.1', status: 'pass', complete_payload: true, launch_verified: true, zero_process_residue: true },
-        { from_version: '0.1.3-beta.1', to_version: '0.1.3-beta.2', status: 'pass', complete_payload: true, launch_verified: true, zero_process_residue: true },
+        { from_version: '0.1.2-beta.7', to_version: '0.1.3-beta.1', status: 'pass', complete_payload: true, payload_sha256_match: true, launch_verified: true, zero_process_residue: true },
+        { from_version: '0.1.3-beta.1', to_version: '0.1.3-beta.2', status: 'pass', complete_payload: true, payload_sha256_match: true, launch_verified: true, zero_process_residue: true },
       ],
     }],
     current_pointer_writes: 0,
@@ -265,10 +290,16 @@ function targetVerification(target) {
         kind: 'windows_signing_policy',
         status: 'pass',
         policy,
+        subject_role: 'windows_setup',
         observed_status: policy === 'authenticode' ? 'Valid' : 'NotSigned',
         timestamp_present: policy === 'authenticode',
       },
-      { kind: 'windows_installer', status: 'pass' },
+      {
+        kind: 'windows_installer',
+        status: 'pass',
+        setup_nupkg_payload_sha256_match: true,
+        root_updater_sha256_match: true,
+      },
     ],
     verified_at: '2026-09-02T02:00:00.000Z',
   };
@@ -490,6 +521,18 @@ test('binding rejects missing evidence, version inversions, discontinuities, cyc
     /discontinuous/u,
   );
 
+  const byteIdentityMissing = acceptance(hold, target);
+  delete byteIdentityMissing.routes[0].hops[0].payload_sha256_match;
+  rehashAcceptance(byteIdentityMissing);
+  assert.throws(
+    () => buildLegacyBridgeCompatibilityBinding({
+      hold,
+      targetCandidate: target,
+      acceptance: byteIdentityMissing,
+    }),
+    /incomplete/u,
+  );
+
   const cyclic = acceptance(hold, target);
   cyclic.routes[0].hops[1].to_version = '0.1.2-beta.7';
   rehashAcceptance(cyclic);
@@ -580,11 +623,13 @@ test('mirrored checkpoint, platform manifest, and archive preserve exact bridge 
   const built = buildPlatformCheckpoint({
     phase: 'build_created',
     candidate: target,
+    transaction: targetTransaction(hold),
     createdAt: '2026-09-02T04:00:00.000Z',
   });
   const verified = buildPlatformCheckpoint({
     phase: 'platform_verified',
     candidate: target,
+    transaction: targetTransaction(hold),
     parent: built,
     verifications: [verification],
     createdAt: '2026-09-02T05:00:00.000Z',
@@ -592,6 +637,7 @@ test('mirrored checkpoint, platform manifest, and archive preserve exact bridge 
   assert.throws(() => buildPlatformCheckpoint({
     phase: 'mirrored',
     candidate: target,
+    transaction: targetTransaction(hold),
     parent: verified,
     verifications: [verification],
     mirrorReceipt: targetMirrorReceipt(target),
@@ -599,6 +645,7 @@ test('mirrored checkpoint, platform manifest, and archive preserve exact bridge 
   const mirrored = buildPlatformCheckpoint({
     phase: 'mirrored',
     candidate: target,
+    transaction: targetTransaction(hold),
     parent: verified,
     verifications: [verification],
     mirrorReceipt: targetMirrorReceipt(target),
@@ -614,17 +661,7 @@ test('mirrored checkpoint, platform manifest, and archive preserve exact bridge 
   assert.equal(manifest.windows_legacy_bridge.binding_id, binding.binding_id);
   assert.equal(manifest.windows_legacy_bridge.bridge_hold_id, hold.hold_id);
 
-  const transaction = {
-    schema: 'flowzero.release_transaction.v1',
-    transaction_id: target.candidate.transaction_id,
-    intent: {
-      requested_platforms: ['windows-x64'],
-      source: target.candidate.source,
-      release: target.candidate.release,
-      windows_signing_policy: target.candidate.update.windows_signing_policy,
-    },
-    attempt: target.candidate.attempt,
-  };
+  const transaction = targetTransaction(hold);
   const archive = buildReleaseArchiveManifest({
     transaction,
     entries: [{

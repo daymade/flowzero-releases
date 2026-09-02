@@ -964,6 +964,12 @@ jobs:
           artifact-ids: ${{ needs.accept-windows.outputs.verification_artifact_id }}
           path: ${{ runner.temp }}/windows-verification
 
+      - name: Download immutable release transaction
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.transaction_artifact_id }}
+          path: ${{ runner.temp }}/windows-transaction
+
       - name: Fail closed on a declared Windows legacy bridge requirement
         run: |
           set -euo pipefail
@@ -985,6 +991,7 @@ jobs:
           node .github/scripts/release-platform-checkpoint.mjs
           --phase build_created
           --candidate "$RUNNER_TEMP/windows-final/evidence/candidate.json"
+          --transaction "$RUNNER_TEMP/windows-transaction/release-transaction.json"
           --output "$RUNNER_TEMP/windows-state/build-created.json"
 
       - name: Freeze Windows acceptance checkpoint
@@ -992,6 +999,7 @@ jobs:
           node .github/scripts/release-platform-checkpoint.mjs
           --phase platform_verified
           --candidate "$RUNNER_TEMP/windows-final/evidence/candidate.json"
+          --transaction "$RUNNER_TEMP/windows-transaction/release-transaction.json"
           --parent "$RUNNER_TEMP/windows-state/build-created.json"
           --verification "$RUNNER_TEMP/windows-verification/verification.json"
           --output "$RUNNER_TEMP/windows-state/platform-verified.json"
@@ -1042,6 +1050,7 @@ jobs:
           node .github/scripts/release-platform-checkpoint.mjs \
             --phase mirrored \
             --candidate "$RUNNER_TEMP/windows-final/evidence/candidate.json" \
+            --transaction "$RUNNER_TEMP/windows-transaction/release-transaction.json" \
             --parent "$RUNNER_TEMP/windows-state/platform-verified.json" \
             --verification "$RUNNER_TEMP/windows-verification/verification.json" \
             --mirror-receipt "$RUNNER_TEMP/windows-state/mirror-receipt.json" \

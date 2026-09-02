@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import {
   TRANSACTION_SCHEMA,
   canonicalJson,
-  validateReleaseIntent,
+  validateReleaseTransaction,
 } from './release-transaction.mjs';
 import { claimNormalReleaseTagArbitration } from './windows-legacy-bridge-reservation.mjs';
 
@@ -65,19 +65,8 @@ function parseJson(raw, label) {
   }
 }
 
-function validateTransaction(transaction) {
-  assert(transaction?.schema === TRANSACTION_SCHEMA, 'release transaction schema is invalid');
-  const intent = validateReleaseIntent(transaction.intent);
-  assert(transaction.transaction_id === intent.transaction_id, 'release transaction identity mismatch');
-  assert(/^\d+$/.test(String(transaction.attempt?.workflow_run_id || '')), 'release transaction owner run id is invalid');
-  assert(Number.isSafeInteger(transaction.attempt?.workflow_run_attempt) && transaction.attempt.workflow_run_attempt > 0, 'release transaction owner run attempt is invalid');
-  assert(/^[a-f0-9]{40}$/.test(transaction.attempt?.release_infrastructure_sha || ''), 'release transaction infrastructure SHA is invalid');
-  assert(!Number.isNaN(Date.parse(transaction.created_at)), 'release transaction creation time is invalid');
-  return { ...transaction, intent };
-}
-
 export function buildTransactionOwnerClaim(transaction) {
-  const validated = validateTransaction(transaction);
+  const validated = validateReleaseTransaction(transaction);
   return {
     schema: TRANSACTION_OWNER_SCHEMA,
     transaction_id: validated.transaction_id,

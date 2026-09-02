@@ -4,7 +4,10 @@ import { createHash } from 'node:crypto';
 import { readFile, rename, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { canonicalJson } from './release-transaction.mjs';
+import {
+  canonicalJson,
+  validateReleaseTransaction,
+} from './release-transaction.mjs';
 import { parseProjectReleaseTag } from './release-tag-contract.mjs';
 import {
   validateLegacyBridgeCompatibilityBinding,
@@ -67,6 +70,43 @@ function resolveRequiredVerificationSuites(candidate) {
     );
   }
   return suites;
+}
+
+function resolvedVerificationContract(candidate) {
+  if (candidate.verification_contract !== undefined) return candidate.verification_contract;
+  return candidate.platform === 'macos-arm64'
+    ? 'macos_voice_context_v1'
+    : 'windows_installer_v1';
+}
+
+function validateCandidateAgainstTransaction(candidateEnvelope, rawTransaction) {
+  const candidate = candidateEnvelope.candidate;
+  const contract = resolvedVerificationContract(candidate);
+  if (rawTransaction === null || rawTransaction === undefined) {
+    assert(
+      contract !== 'windows_installer_v2',
+      'Windows v2 candidate requires the immutable release transaction',
+    );
+    return null;
+  }
+  const transaction = validateReleaseTransaction(rawTransaction);
+  const intent = transaction.intent;
+  assert(candidate.transaction_id === transaction.transaction_id, 'candidate transaction does not match immutable release transaction');
+  assert(intent.requested_platforms.includes(candidate.platform), 'candidate platform was not requested by immutable release transaction');
+  assert(canonicalJson(candidate.source) === canonicalJson(intent.source), 'candidate source does not match immutable release transaction');
+  assert(canonicalJson(candidate.release) === canonicalJson(intent.release), 'candidate release does not match immutable release transaction');
+  if (candidate.platform === 'windows-x64') {
+    assert(
+      candidate.update?.windows_signing_policy === intent.windows_signing_policy,
+      'candidate Windows signing policy does not match immutable release transaction',
+    );
+    assert(
+      canonicalJson(candidate.update?.windows_legacy_bridge)
+        === canonicalJson(intent.windows_legacy_bridge),
+      'candidate Windows bridge requirement does not match immutable release transaction',
+    );
+  }
+  return transaction;
 }
 
 function assertNoTranscriptBearingKeys(value) {
@@ -382,7 +422,7 @@ export function validateVerificationReceipt(receipt, candidateEnvelope) {
     }
   } else {
     assert(subject.role === 'windows_setup', 'Windows verification subject must be the Setup executable');
-    if (candidate.verification_contract === 'windows_installer_v1') {
+    if (resolvedVerificationContract(candidate) === 'windows_installer_v1') {
       const signature = receipt.evidence?.find(
         (entry) => entry.kind === 'windows_authenticode',
       );
@@ -393,13 +433,23 @@ export function validateVerificationReceipt(receipt, candidateEnvelope) {
     } else {
       assert(receipt.candidate_id === candidateEnvelope.candidate_id, 'Windows v2 verification must bind the candidate ID');
       const policy = validateWindowsSigningPolicy(candidate.update?.windows_signing_policy);
-      const signature = receipt.evidence?.find(
+      assert(Array.isArray(receipt.evidence) && receipt.evidence.length === 2, 'Windows v2 verification evidence set is invalid');
+      const signatureRows = receipt.evidence.filter(
         (entry) => entry.kind === 'windows_signing_policy',
       );
+      const installerRows = receipt.evidence.filter(
+        (entry) => entry.kind === 'windows_installer',
+      );
+      assert(
+        signatureRows.length === 1 && installerRows.length === 1,
+        'Windows v2 verification evidence kinds are invalid',
+      );
+      const [signature] = signatureRows;
       if (policy === 'authenticode') {
         assert(
           signature?.status === 'pass'
             && signature.policy === 'authenticode'
+            && signature.subject_role === 'windows_setup'
             && signature.observed_status === 'Valid'
             && signature.timestamp_present === true,
           'Windows Authenticode policy verification is incomplete',
@@ -408,6 +458,7 @@ export function validateVerificationReceipt(receipt, candidateEnvelope) {
         assert(
           signature?.status === 'pass'
             && signature.policy === 'unsigned'
+            && signature.subject_role === 'windows_setup'
             && signature.observed_status === 'NotSigned'
             && signature.timestamp_present === false,
           'Windows unsigned policy verification is incomplete',
@@ -418,6 +469,13 @@ export function validateVerificationReceipt(receipt, candidateEnvelope) {
       (entry) => entry.kind === 'windows_installer' && entry.status === 'pass',
     );
     assert(installer, 'Windows verification is missing installer smoke evidence');
+    if (resolvedVerificationContract(candidate) === 'windows_installer_v2') {
+      assert(
+        installer.setup_nupkg_payload_sha256_match === true
+          && installer.root_updater_sha256_match === true,
+        'Windows v2 installer byte-identity evidence is incomplete',
+      );
+    }
   }
   return JSON.parse(JSON.stringify(receipt));
 }
@@ -497,6 +555,7 @@ function validateParent(parent, { phase, candidateEnvelope }) {
 export function buildPlatformCheckpoint({
   phase,
   candidate: rawCandidate,
+  transaction: rawTransaction = null,
   parent = null,
   verifications = [],
   mirrorReceipt = null,
@@ -506,6 +565,7 @@ export function buildPlatformCheckpoint({
 }) {
   assert(PHASES.includes(phase), `unsupported checkpoint phase: ${phase}`);
   const candidate = validateCandidateEnvelope(rawCandidate);
+  validateCandidateAgainstTransaction(candidate, rawTransaction);
   const validatedParent = validateParent(parent, { phase, candidateEnvelope: candidate });
   let validatedVerifications = [];
   let validatedMirrorReceipt = null;
@@ -568,7 +628,7 @@ function parseArguments(argv) {
     if (!value) throw new Error(`${key || '<empty>'} requires a value`);
     if (key === '--verification') {
       values.verifications.push(value);
-    } else if (['--phase', '--candidate', '--parent', '--mirror-receipt', '--legacy-bridge-binding', '--legacy-bridge-hold', '--output'].includes(key)) {
+    } else if (['--phase', '--candidate', '--transaction', '--parent', '--mirror-receipt', '--legacy-bridge-binding', '--legacy-bridge-hold', '--output'].includes(key)) {
       if (values[key]) throw new Error(`duplicate argument: ${key}`);
       values[key] = value;
     } else {
@@ -585,6 +645,9 @@ function parseArguments(argv) {
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArguments(argv);
   const candidate = JSON.parse(await readFile(path.resolve(args['--candidate']), 'utf8'));
+  const transaction = args['--transaction']
+    ? JSON.parse(await readFile(path.resolve(args['--transaction']), 'utf8'))
+    : null;
   const parent = args['--parent']
     ? JSON.parse(await readFile(path.resolve(args['--parent']), 'utf8'))
     : null;
@@ -603,6 +666,7 @@ export async function main(argv = process.argv.slice(2)) {
   const result = buildPlatformCheckpoint({
     phase: args['--phase'],
     candidate,
+    transaction,
     parent,
     verifications,
     mirrorReceipt,
