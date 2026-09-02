@@ -119,8 +119,10 @@ test('every downstream release job is gated by the durable transaction owner cla
   }
 });
 
-test('Windows signing configuration is required before durable release reservation', () => {
+test('Windows defaults to explicit unsigned delivery and gates certificate use behind Authenticode', () => {
   const prepare = jobBlock('prepare');
+  const windowsBuild = jobBlock('build-windows');
+  const windowsAcceptance = jobBlock('accept-windows');
   const signingPreflight = prepare.indexOf('Require Windows signing configuration before durable reservation');
   const bridgeReservation = prepare.indexOf('windows-legacy-bridge-reservation.mjs assert-transaction');
   const ownerClaim = prepare.indexOf('claim-release-transaction.mjs');
@@ -128,10 +130,20 @@ test('Windows signing configuration is required before durable release reservati
   assert.ok(bridgeReservation > signingPreflight, 'bridge reservation precedes Windows signing gate');
   assert.ok(ownerClaim > signingPreflight, 'release owner claim precedes Windows signing gate');
   const preflight = prepare.slice(signingPreflight, bridgeReservation);
-  assert.match(preflight, /if: steps\.transaction\.outputs\.windows_requested == 'true'/u);
+  assert.match(workflow, /windows_signing_policy:[\s\S]*default: unsigned[\s\S]*- unsigned[\s\S]*- authenticode/u);
+  assert.match(
+    preflight,
+    /if: steps\.transaction\.outputs\.windows_requested == 'true' && steps\.transaction\.outputs\.windows_signing_policy == 'authenticode'/u,
+  );
   assert.match(preflight, /WINDOWS_CERT_PFX_PRESENT: \$\{\{ secrets\.WINDOWS_CERT_PFX != '' \}\}/u);
   assert.match(preflight, /WINDOWS_CERT_PASSWORD_PRESENT: \$\{\{ secrets\.WINDOWS_CERT_PASSWORD != '' \}\}/u);
   assert.doesNotMatch(preflight, /WINDOWS_CERT_PFX:|WINDOWS_CERT_PASSWORD:/u);
+  assert.match(windowsBuild, /--windows-signing-policy "\$\{\{ needs\.prepare\.outputs\.windows_signing_policy \}\}"/u);
+  assert.match(windowsBuild, /needs\.prepare\.outputs\.windows_signing_policy == 'authenticode'/u);
+  assert.match(
+    windowsAcceptance,
+    /--candidate-manifest "\$env:RUNNER_TEMP\/windows-final\/evidence\/candidate\.json"/u,
+  );
 });
 
 test('macOS and Windows have independent build, mirror, promotion, and canary DAGs', () => {

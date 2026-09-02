@@ -10,6 +10,7 @@ import {
   LEGACY_BRIDGE_PURPOSE,
   validateLegacyBridgeHold,
   validateLegacyBridgeIntent,
+  validateWindowsSigningPolicy,
 } from './windows-legacy-bridge-contract.mjs';
 
 export const LEGACY_BRIDGE_RESERVATION_SCHEMA = 'flowzero.windows_legacy_bridge_reservation.v1';
@@ -49,6 +50,7 @@ function buildReservation(intent, role) {
     bridge_tag: intent.bridge.tag,
     target_tag: intent.target.tag,
     affected_versions: [...intent.affected_versions],
+    windows_signing_policy: intent.windows_signing_policy,
   };
   return {
     schema: LEGACY_BRIDGE_RESERVATION_SCHEMA,
@@ -113,6 +115,7 @@ function validateReservation(envelope, expectedRole = null) {
   assert(reservation.platform === 'windows-x64', 'legacy bridge reservation platform is invalid');
   assert(/^sha256:[a-f0-9]{64}$/u.test(reservation.bridge_transaction_id || ''), 'legacy bridge reservation transaction is invalid');
   assert(/^[a-f0-9]{40}$/u.test(reservation.source_head_sha || ''), 'legacy bridge reservation source SHA is invalid');
+  validateWindowsSigningPolicy(reservation.windows_signing_policy);
   assert(envelope.reservation_id === contentId(reservation), 'legacy bridge reservation content hash is invalid');
   return structuredClone(envelope);
 }
@@ -186,6 +189,10 @@ function assertTargetTransactionMatchesReservation(transaction, arbitration) {
     'reserved Windows target transaction source does not match the exact shared source SHA',
   );
   assert(requirement.bridge_tag === reservation.bridge_tag, 'reserved Windows target bridge tag mismatch');
+  assert(
+    transaction.intent.windows_signing_policy === reservation.windows_signing_policy,
+    'reserved Windows target signing policy mismatch',
+  );
   assert(canonicalJson(requirement.affected_versions) === canonicalJson(reservation.affected_versions), 'reserved Windows target affected versions mismatch');
 }
 
@@ -271,11 +278,16 @@ export function assertReleaseCandidateReservations(candidateEnvelope, {
     'reserved Windows target candidate source does not match the exact shared source SHA',
   );
   assert(requirement.bridge_tag === targetReservation.reservation.bridge_tag, 'reserved Windows target bridge tag mismatch');
+  assert(
+    candidate.update?.windows_signing_policy === targetReservation.reservation.windows_signing_policy,
+    'reserved Windows target candidate signing policy mismatch',
+  );
   assert(canonicalJson(requirement.affected_versions) === canonicalJson(targetReservation.reservation.affected_versions), 'reserved Windows target affected versions mismatch');
   const holdKey = `channels/${candidate.release.channel}/platforms/windows-x64/legacy-bridges/${requirement.bridge_tag}/${requirement.bridge_hold_id.slice('sha256:'.length)}.json`;
   const hold = validateLegacyBridgeHold(readObject(env, holdKey, dependencies));
   assert(hold.hold.transaction_id === targetReservation.reservation.bridge_transaction_id, 'reserved Windows target hold transaction mismatch');
   assert(hold.hold.source_head_sha === targetReservation.reservation.source_head_sha, 'reserved Windows target hold source mismatch');
+  assert(hold.hold.windows_signing_policy === targetReservation.reservation.windows_signing_policy, 'reserved Windows target hold signing policy mismatch');
   assert(hold.hold.target.tag === candidate.release.tag, 'reserved Windows target release mismatch');
   return { status: 'required', reservation_id: targetReservation.reservation_id, hold_id: hold.hold_id };
 }
@@ -299,8 +311,11 @@ export function assertReleaseTransactionReservations(transaction, options = {}) 
       source: transaction.intent.source,
       release: transaction.intent.release,
       update: transaction.intent.windows_legacy_bridge
-        ? { windows_legacy_bridge: transaction.intent.windows_legacy_bridge }
-        : {},
+        ? {
+            windows_legacy_bridge: transaction.intent.windows_legacy_bridge,
+            windows_signing_policy: transaction.intent.windows_signing_policy,
+          }
+        : { windows_signing_policy: transaction.intent.windows_signing_policy },
     },
   }, options);
 }

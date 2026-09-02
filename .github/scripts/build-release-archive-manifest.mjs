@@ -30,6 +30,13 @@ export function buildReleaseArchiveManifest({ transaction, entries }) {
     const platform = candidate.candidate.platform;
     assert(!byPlatform.has(platform), `duplicate archive platform: ${platform}`);
     assert(candidate.candidate.transaction_id === transaction.transaction_id, 'archive candidate transaction mismatch');
+    if (platform === 'windows-x64') {
+      assert(
+        candidate.candidate.update?.windows_signing_policy
+          === transaction.intent.windows_signing_policy,
+        'archive Windows candidate signing policy does not match the release intent',
+      );
+    }
     let windowsLegacyBridge = null;
     if (candidate.candidate.update?.windows_legacy_bridge !== undefined) {
       assert(entry.windowsLegacyBridge, 'archive Windows bridge evidence is missing');
@@ -53,6 +60,9 @@ export function buildReleaseArchiveManifest({ transaction, entries }) {
     transaction_id: transaction.transaction_id,
     source: transaction.intent.source,
     release: transaction.intent.release,
+    ...(transaction.intent.windows_signing_policy
+      ? { windows_signing_policy: transaction.intent.windows_signing_policy }
+      : {}),
     release_infrastructure: transaction.attempt,
     platforms: requested.map((platform) => {
       const entry = byPlatform.get(platform);
@@ -89,6 +99,12 @@ export function validateReleaseArchiveManifest(manifest) {
     assert(candidate.candidate.transaction_id === archive.transaction_id, 'release archive candidate transaction mismatch');
     assert(canonicalJson(candidate.candidate.source) === canonicalJson(archive.source), 'release archive candidate source mismatch');
     assert(canonicalJson(candidate.candidate.release) === canonicalJson(archive.release), 'release archive candidate release mismatch');
+    if (entry.platform === 'windows-x64') {
+      assert(
+        candidate.candidate.update?.windows_signing_policy === archive.windows_signing_policy,
+        'release archive Windows signing policy mismatch',
+      );
+    }
     validateVerificationReceipt(entry.verification, candidate);
     if (candidate.candidate.update?.windows_legacy_bridge !== undefined) {
       assert(entry.windows_legacy_bridge, 'release archive Windows bridge evidence is missing');

@@ -24,6 +24,7 @@ export const LEGACY_BRIDGE_ASSET_ROLES = Object.freeze([
   'windows_bridge_releases',
 ]);
 export const LEGACY_BRIDGE_AFFECTED_VERSIONS = Object.freeze(['0.1.2-beta.7']);
+export const WINDOWS_SIGNING_POLICIES = Object.freeze(['unsigned', 'authenticode']);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -35,6 +36,11 @@ function contentId(value) {
 
 function assertContentId(value, label) {
   assert(/^sha256:[a-f0-9]{64}$/u.test(value || ''), `${label} is invalid`);
+}
+
+export function validateWindowsSigningPolicy(value) {
+  assert(WINDOWS_SIGNING_POLICIES.includes(value), 'Windows signing policy is invalid');
+  return value;
 }
 
 function compareVersion(left, right) {
@@ -205,6 +211,7 @@ export function buildLegacyBridgeIntent({
   targetVersion,
   targetFeedUrl,
   targetSetupUrl,
+  windowsSigningPolicy = 'unsigned',
 }) {
   const parsed = parseProjectReleaseTag(`v${bridgeVersion}`);
   const parsedTarget = parseProjectReleaseTag(`v${targetVersion}`);
@@ -224,6 +231,7 @@ export function buildLegacyBridgeIntent({
     operation: 'legacy_bridge',
     mode: 'qualification_hold',
     platform: 'windows-x64',
+    windows_signing_policy: validateWindowsSigningPolicy(windowsSigningPolicy),
     source: { repository: 'daymade/flowzero', head_sha: sourceHeadSha },
     bridge: {
       version: parsed.version,
@@ -259,6 +267,7 @@ export function validateLegacyBridgeIntent(input) {
   assert(input.operation === 'legacy_bridge', 'legacy bridge operation is invalid');
   assert(input.mode === 'qualification_hold', 'legacy bridge mode is invalid');
   assert(input.platform === 'windows-x64', 'legacy bridge is restricted to windows-x64');
+  validateWindowsSigningPolicy(input.windows_signing_policy);
   validateSource(input.source, 'legacy bridge source');
   validateRelease(input.bridge, 'legacy bridge release');
   validatePlannedTarget(input.target, input.bridge);
@@ -313,6 +322,7 @@ export function validateLegacyBridgeCandidate(envelope, intentInput = null) {
   const candidate = envelope.candidate;
   assert(candidate?.purpose === LEGACY_BRIDGE_PURPOSE, 'legacy bridge candidate payload purpose is invalid');
   assert(candidate.platform === 'windows-x64', 'legacy bridge candidate is restricted to windows-x64');
+  validateWindowsSigningPolicy(candidate.windows_signing_policy);
   validateSource(candidate.source, 'legacy bridge candidate source');
   validateRelease(candidate.bridge, 'legacy bridge candidate release');
   validatePlannedTarget(candidate.target, candidate.bridge);
@@ -340,6 +350,7 @@ export function validateLegacyBridgeCandidate(envelope, intentInput = null) {
     assert(canonicalJson(candidate.bridge) === canonicalJson(intent.bridge), 'legacy bridge candidate release mismatch');
     assert(canonicalJson(candidate.target) === canonicalJson(intent.target), 'legacy bridge candidate target mismatch');
     assert(canonicalJson(candidate.affected_versions) === canonicalJson(intent.affected_versions), 'legacy bridge affected versions mismatch');
+    assert(candidate.windows_signing_policy === intent.windows_signing_policy, 'legacy bridge signing policy mismatch');
   }
   return structuredClone(envelope);
 }
@@ -358,6 +369,22 @@ export function validateLegacyBridgeVerification(receipt, candidateInput) {
   assert(canonicalJson(receipt.affected_versions) === canonicalJson(candidate.candidate.affected_versions), 'legacy bridge verification affected versions mismatch');
   assert(!Number.isNaN(Date.parse(receipt.verified_at)), 'legacy bridge verification timestamp is invalid');
   assert(receipt.evidence?.current_pointer_writes === 0, 'legacy bridge verification wrote a current pointer');
+  assert(
+    receipt.evidence?.windows_signing_policy === candidate.candidate.windows_signing_policy,
+    'legacy bridge verification signing policy mismatch',
+  );
+  const signingEvidence = receipt.evidence?.windows_signing;
+  assert(
+    signingEvidence?.status === 'pass'
+      && signingEvidence.policy === candidate.candidate.windows_signing_policy
+      && signingEvidence.observed_status === (
+        candidate.candidate.windows_signing_policy === 'authenticode' ? 'Valid' : 'NotSigned'
+      )
+      && signingEvidence.timestamp_present === (
+        candidate.candidate.windows_signing_policy === 'authenticode'
+      ),
+    'legacy bridge verification signing evidence is incomplete',
+  );
   assert(
     receipt.evidence?.target_routing?.embedded === true
       && receipt.evidence.target_routing.version === candidate.candidate.target.version
@@ -507,6 +534,7 @@ export function buildLegacyBridgeHold({
     bridge: structuredClone(candidate.candidate.bridge),
     target: structuredClone(candidate.candidate.target),
     affected_versions: [...candidate.candidate.affected_versions],
+    windows_signing_policy: candidate.candidate.windows_signing_policy,
     asset_namespace: mirrorReceipt.namespace,
     assets: structuredClone(candidate.candidate.assets),
     current_pointer: structuredClone(currentPointer),
@@ -532,6 +560,7 @@ export function validateLegacyBridgeHold(envelope) {
   assertContentId(hold.candidate_id, 'legacy bridge hold candidate id');
   assertContentId(hold.checkpoint_id, 'legacy bridge hold checkpoint id');
   assert(/^[a-f0-9]{40}$/u.test(hold.source_head_sha || ''), 'legacy bridge hold source SHA is invalid');
+  validateWindowsSigningPolicy(hold.windows_signing_policy);
   validateRelease(hold.bridge, 'legacy bridge hold release');
   validatePlannedTarget(hold.target, hold.bridge);
   canonicalVersions(hold.affected_versions, { before: hold.bridge.version });
@@ -581,6 +610,7 @@ export function buildLegacyBridgeCompatibilityBinding({ hold: rawHold, targetCan
   assert(target?.platform === 'windows-x64', 'legacy bridge target must be windows-x64');
   validateSource(target.source, 'legacy bridge target source');
   validateRelease(target.release, 'legacy bridge target release');
+  validateWindowsSigningPolicy(target.update?.windows_signing_policy);
   const requirement = validateLegacyBridgeRequirement(target.update?.windows_legacy_bridge, target.release.version);
   assert(requirement.bridge_hold_id === hold.hold_id, 'target bridge hold requirement mismatch');
   assert(requirement.bridge_tag === hold.hold.bridge.tag, 'target bridge tag requirement mismatch');
@@ -588,6 +618,10 @@ export function buildLegacyBridgeCompatibilityBinding({ hold: rawHold, targetCan
   assert(
     hold.hold.source_head_sha === target.source.head_sha,
     'legacy bridge hold and target candidate must share the exact source SHA',
+  );
+  assert(
+    hold.hold.windows_signing_policy === target.update.windows_signing_policy,
+    'legacy bridge hold and target candidate signing policies differ',
   );
   assert(compareVersion(hold.hold.bridge.version, target.release.version) < 0, 'legacy bridge version must be older than target');
   assert(canonicalJson(hold.hold.target) === canonicalJson({
@@ -642,6 +676,7 @@ export function buildLegacyBridgeCompatibilityBinding({ hold: rawHold, targetCan
     purpose: LEGACY_BRIDGE_PURPOSE,
     platform: 'windows-x64',
     channel: target.release.channel,
+    windows_signing_policy: hold.hold.windows_signing_policy,
     affected_versions: [...affectedVersions],
     bridge: {
       hold_id: hold.hold_id,
@@ -701,7 +736,7 @@ function parseArguments(argv) {
 export async function main(argv = process.argv.slice(2)) {
   const { command, values } = parseArguments(argv);
   if (command === 'build-intent') {
-    for (const key of ['--source-head-sha', '--bridge-version', '--affected-versions', '--target-version', '--target-feed-url', '--target-setup-url', '--output']) {
+    for (const key of ['--source-head-sha', '--bridge-version', '--affected-versions', '--target-version', '--target-feed-url', '--target-setup-url', '--windows-signing-policy', '--output']) {
       assert(values[key], `missing argument: ${key}`);
     }
     const intent = buildLegacyBridgeIntent({
@@ -711,6 +746,7 @@ export async function main(argv = process.argv.slice(2)) {
       targetVersion: values['--target-version'],
       targetFeedUrl: values['--target-feed-url'],
       targetSetupUrl: values['--target-setup-url'],
+      windowsSigningPolicy: values['--windows-signing-policy'],
     });
     if (values['--transaction-id']) {
       assert(values['--transaction-id'] === intent.transaction_id, 'legacy bridge transaction ID mismatch');

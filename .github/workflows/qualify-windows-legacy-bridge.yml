@@ -34,6 +34,14 @@ on:
         description: Exact content-addressed Windows legacy bridge transaction ID
         required: true
         type: string
+      windows_signing_policy:
+        description: Windows bridge and target signing policy; unsigned is the zero-cost default
+        required: true
+        type: choice
+        default: unsigned
+        options:
+          - unsigned
+          - authenticode
 
 permissions:
   contents: read
@@ -55,6 +63,7 @@ jobs:
       target_setup_url: ${{ steps.identity.outputs.target_setup_url }}
       transaction_id: ${{ steps.identity.outputs.transaction_id }}
       transaction_short: ${{ steps.identity.outputs.transaction_short }}
+      windows_signing_policy: ${{ steps.identity.outputs.windows_signing_policy }}
       intent_artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - name: Checkout frozen release infrastructure
@@ -83,6 +92,7 @@ jobs:
               --target-version "$INPUT_TARGET_VERSION" \
               --target-feed-url "$INPUT_TARGET_FEED_URL" \
               --target-setup-url "$INPUT_TARGET_SETUP_URL" \
+              --windows-signing-policy "$INPUT_WINDOWS_SIGNING_POLICY" \
               --transaction-id "$INPUT_TRANSACTION_ID" \
               --output "$RUNNER_TEMP/legacy-bridge-intent/intent.json"
           fi
@@ -95,6 +105,7 @@ jobs:
             fs.appendFileSync(process.env.GITHUB_OUTPUT, [
               `head_sha=${intent.source.head_sha}`,
               `target_version=${intent.target.version}`,
+              `windows_signing_policy=${intent.windows_signing_policy}`,
               "",
             ].join("\n"));
           '
@@ -108,6 +119,7 @@ jobs:
           INPUT_TARGET_VERSION: ${{ inputs.target_version }}
           INPUT_TARGET_FEED_URL: ${{ inputs.target_feed_url }}
           INPUT_TARGET_SETUP_URL: ${{ inputs.target_setup_url }}
+          INPUT_WINDOWS_SIGNING_POLICY: ${{ inputs.windows_signing_policy }}
           INPUT_TRANSACTION_ID: ${{ inputs.transaction_id }}
 
       - name: Verify the frozen hold contracts
@@ -155,6 +167,7 @@ jobs:
           QUALIFIED_SOURCE_HEAD_SHA: ${{ steps.requested-identity.outputs.head_sha }}
 
       - name: Require Windows signing configuration before reserving immutable tags
+        if: steps.requested-identity.outputs.windows_signing_policy == 'authenticode'
         shell: bash
         run: |
           set -euo pipefail
@@ -194,6 +207,7 @@ jobs:
               `target_setup_url=${intent.target.setup_url}`,
               `transaction_id=${intent.transaction_id}`,
               `transaction_short=${intent.transaction_id.slice(7, 23)}`,
+              `windows_signing_policy=${intent.windows_signing_policy}`,
               "",
             ].join("\n"));
           '
@@ -268,15 +282,15 @@ jobs:
         env:
           SKIP_INSTALL_CONFIRM: '1'
 
-      - name: Build the signed compatibility bridge through the source SSOT
+      - name: Build the compatibility bridge through the explicit signing policy
         working-directory: flowzero
         run: >-
           pnpm run release:build:windows-legacy-bridge:ci --
           --intent "$env:RUNNER_TEMP/legacy-bridge-intent/intent.json"
           --output-root "$env:RUNNER_TEMP/windows-legacy-bridge"
         env:
-          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
-          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          WINDOWS_CERT_PFX: ${{ needs.prepare-hold-intent.outputs.windows_signing_policy == 'authenticode' && secrets.WINDOWS_CERT_PFX || '' }}
+          WINDOWS_CERT_PASSWORD: ${{ needs.prepare-hold-intent.outputs.windows_signing_policy == 'authenticode' && secrets.WINDOWS_CERT_PASSWORD || '' }}
           FLOWZERO_LEGACY_BRIDGE_TARGET_VERSION: ${{ needs.prepare-hold-intent.outputs.target_version }}
           FLOWZERO_LEGACY_BRIDGE_TARGET_FEED_URL: ${{ needs.prepare-hold-intent.outputs.target_feed_url }}
           FLOWZERO_LEGACY_BRIDGE_TARGET_SETUP_URL: ${{ needs.prepare-hold-intent.outputs.target_setup_url }}

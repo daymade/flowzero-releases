@@ -35,6 +35,14 @@ on:
         options:
           - standard
           - offline
+      windows_signing_policy:
+        description: Windows release signing policy; unsigned is the zero-cost default
+        required: true
+        type: choice
+        default: unsigned
+        options:
+          - unsigned
+          - authenticode
       windows_legacy_bridge_hold_id:
         description: Optional exact sha256 hold ID required by a Windows target
         required: false
@@ -70,6 +78,7 @@ jobs:
       release_infra_sha: ${{ steps.transaction.outputs.release_infra_sha }}
       macos_requested: ${{ steps.transaction.outputs.macos_requested }}
       windows_requested: ${{ steps.transaction.outputs.windows_requested }}
+      windows_signing_policy: ${{ steps.transaction.outputs.windows_signing_policy }}
       windows_nupkg_name: ${{ steps.transaction.outputs.windows_nupkg_name }}
       windows_legacy_bridge_required: ${{ steps.transaction.outputs.windows_legacy_bridge_required }}
       windows_legacy_bridge_hold_id: ${{ steps.transaction.outputs.windows_legacy_bridge_hold_id }}
@@ -106,7 +115,7 @@ jobs:
         run: node --test .github/scripts/*.test.mjs workers/release-download/test/*.test.js
 
       - name: Require Windows signing configuration before durable reservation
-        if: steps.transaction.outputs.windows_requested == 'true'
+        if: steps.transaction.outputs.windows_requested == 'true' && steps.transaction.outputs.windows_signing_policy == 'authenticode'
         shell: bash
         run: |
           set -euo pipefail
@@ -635,6 +644,7 @@ jobs:
           cache: pnpm
 
       - name: Require Windows Authenticode configuration
+        if: needs.prepare.outputs.windows_signing_policy == 'authenticode'
         shell: pwsh
         run: >-
           node -e "for (const name of ['WINDOWS_CERT_PFX','WINDOWS_CERT_PASSWORD']) if (!process.env[name]) throw new Error('missing release secret: '+name)"
@@ -643,6 +653,7 @@ jobs:
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
 
       - name: Materialize Windows certificate
+        if: needs.prepare.outputs.windows_signing_policy == 'authenticode'
         shell: pwsh
         run: node -e "require('node:fs').writeFileSync(process.env.WINDOWS_CERT_FILE,Buffer.from(process.env.WINDOWS_CERT_PFX,'base64'))"
         env:
@@ -657,17 +668,18 @@ jobs:
       - name: Verify the native media application seam
         run: pnpm run test:native-media:ci
 
-      - name: Build signed Windows release set
+      - name: Build Windows release set with the explicit signing policy
         run: >-
           pnpm run release:build:ci --
           --mode make
           --version "${{ needs.prepare.outputs.version }}"
           --head-sha "${{ needs.prepare.outputs.head_sha }}"
           --arch x64
+          --windows-signing-policy "${{ needs.prepare.outputs.windows_signing_policy }}"
           ${{ needs.prepare.outputs.variant == 'offline' && '--offline' || '' }}
         env:
-          WINDOWS_CERT_FILE: ${{ runner.temp }}\flowzero-signing.pfx
-          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          WINDOWS_CERT_FILE: ${{ needs.prepare.outputs.windows_signing_policy == 'authenticode' && format('{0}\flowzero-signing.pfx', runner.temp) || '' }}
+          WINDOWS_CERT_PASSWORD: ${{ needs.prepare.outputs.windows_signing_policy == 'authenticode' && secrets.WINDOWS_CERT_PASSWORD || '' }}
 
       - name: Stage exact Windows release roles
         run: >-
@@ -699,6 +711,7 @@ jobs:
             --release-infra-sha '${{ needs.prepare.outputs.release_infra_sha }}' `
             --run-id "$env:GITHUB_RUN_ID" `
             --run-attempt "$env:GITHUB_RUN_ATTEMPT" `
+            --windows-signing-policy '${{ needs.prepare.outputs.windows_signing_policy }}' `
             --asset "windows_setup=$env:RUNNER_TEMP/windows-final/artifacts/Flowzero-${{ needs.prepare.outputs.version }}-Setup.exe" `
             --asset "windows_nupkg=$env:RUNNER_TEMP/windows-final/artifacts/${{ needs.prepare.outputs.windows_nupkg_name }}" `
             --asset "windows_releases=$env:RUNNER_TEMP/windows-final/artifacts/RELEASES" `
@@ -759,12 +772,13 @@ jobs:
           artifact-ids: ${{ needs.build-windows.outputs.final_artifact_id }}
           path: ${{ runner.temp }}/windows-final
 
-      - name: Verify signed installer and installed app
+      - name: Verify the explicit Windows signing policy and installed app
         run: >-
           pnpm run release:verify:ci --
           --suite windows-installer
           --version "${{ needs.prepare.outputs.version }}"
           --head-sha "${{ needs.prepare.outputs.head_sha }}"
+          --candidate-manifest "$env:RUNNER_TEMP/windows-final/evidence/candidate.json"
           --release-dir "$env:RUNNER_TEMP/windows-final/artifacts"
           --subject-file "$env:RUNNER_TEMP/windows-final/artifacts/Flowzero-${{ needs.prepare.outputs.version }}-Setup.exe"
           --output "$env:RUNNER_TEMP/windows-verification/verification.json"

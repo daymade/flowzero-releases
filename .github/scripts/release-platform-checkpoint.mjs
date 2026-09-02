@@ -10,6 +10,7 @@ import {
   validateLegacyBridgeCompatibilityBinding,
   validateLegacyBridgeHold,
   validateLegacyBridgeRequirement,
+  validateWindowsSigningPolicy,
 } from './windows-legacy-bridge-contract.mjs';
 
 export const CHECKPOINT_SCHEMA = 'flowzero.release_platform_checkpoint.v1';
@@ -36,6 +37,7 @@ export const VERIFICATION_CONTRACTS = Object.freeze({
     'macos-live-stepfun-timeline',
   ]),
   windows_installer_v1: Object.freeze(['windows-installer']),
+  windows_installer_v2: Object.freeze(['windows-installer']),
 });
 
 function assert(condition, message) {
@@ -59,7 +61,10 @@ function resolveRequiredVerificationSuites(candidate) {
   if (candidate.platform === 'macos-arm64') {
     assert(declared.startsWith('macos_'), 'candidate verification contract does not match macOS');
   } else {
-    assert(declared === 'windows_installer_v1', 'candidate verification contract does not match Windows');
+    assert(
+      ['windows_installer_v1', 'windows_installer_v2'].includes(declared),
+      'candidate verification contract does not match Windows',
+    );
   }
   return suites;
 }
@@ -274,6 +279,14 @@ export function validateCandidateEnvelope(envelope) {
         candidate.release.version,
       );
     }
+    if (candidate.verification_contract === 'windows_installer_v2') {
+      validateWindowsSigningPolicy(candidate.update?.windows_signing_policy);
+    } else {
+      assert(
+        candidate.update?.windows_signing_policy === undefined,
+        'legacy Windows candidate cannot declare a v2 signing policy',
+      );
+    }
   }
   assert(hashEnvelope(candidate) === envelope.candidate_id, 'candidate content hash is invalid');
   return JSON.parse(JSON.stringify(envelope));
@@ -368,13 +381,39 @@ export function validateVerificationReceipt(receipt, candidateEnvelope) {
       return projectedReceipt;
     }
   } else {
-    assert(subject.role === 'windows_setup', 'Windows verification subject must be the signed Setup executable');
-    const signature = receipt.evidence?.find(
-      (entry) => entry.kind === 'windows_authenticode'
-        && entry.status === 'pass'
-        && entry.timestamp_present === true,
-    );
-    assert(signature, 'Windows verification is missing valid timestamped Authenticode evidence');
+    assert(subject.role === 'windows_setup', 'Windows verification subject must be the Setup executable');
+    if (candidate.verification_contract === 'windows_installer_v1') {
+      const signature = receipt.evidence?.find(
+        (entry) => entry.kind === 'windows_authenticode',
+      );
+      assert(
+        signature?.status === 'pass' && signature.timestamp_present === true,
+        'Windows verification is missing valid timestamped Authenticode evidence',
+      );
+    } else {
+      assert(receipt.candidate_id === candidateEnvelope.candidate_id, 'Windows v2 verification must bind the candidate ID');
+      const policy = validateWindowsSigningPolicy(candidate.update?.windows_signing_policy);
+      const signature = receipt.evidence?.find(
+        (entry) => entry.kind === 'windows_signing_policy',
+      );
+      if (policy === 'authenticode') {
+        assert(
+          signature?.status === 'pass'
+            && signature.policy === 'authenticode'
+            && signature.observed_status === 'Valid'
+            && signature.timestamp_present === true,
+          'Windows Authenticode policy verification is incomplete',
+        );
+      } else {
+        assert(
+          signature?.status === 'pass'
+            && signature.policy === 'unsigned'
+            && signature.observed_status === 'NotSigned'
+            && signature.timestamp_present === false,
+          'Windows unsigned policy verification is incomplete',
+        );
+      }
+    }
     const installer = receipt.evidence?.find(
       (entry) => entry.kind === 'windows_installer' && entry.status === 'pass',
     );

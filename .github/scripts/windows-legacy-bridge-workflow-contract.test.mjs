@@ -54,6 +54,7 @@ test('manual hold inputs reach shell only through environment variables', () => 
     'INPUT_TARGET_VERSION',
     'INPUT_TARGET_FEED_URL',
     'INPUT_TARGET_SETUP_URL',
+    'INPUT_WINDOWS_SIGNING_POLICY',
     'INPUT_TRANSACTION_ID',
   ]) {
     assert.match(holdWorkflow, new RegExp(`${name}: \\$\\{\\{ inputs\\.`, 'u'));
@@ -80,6 +81,11 @@ test('invalid shared source fails before any immutable tag reservation write', (
   );
   assert.match(prepare, /ref: \$\{\{ steps\.requested-identity\.outputs\.head_sha \}\}/u);
   assert.match(prepare, /--intent "\$RUNNER_TEMP\/legacy-bridge-intent\/intent\.json"/u);
+  assert.match(holdWorkflow, /windows_signing_policy:[\s\S]*default: unsigned[\s\S]*- unsigned[\s\S]*- authenticode/u);
+  assert.match(
+    prepare.slice(signingPreflight, reservationWrite),
+    /if: steps\.requested-identity\.outputs\.windows_signing_policy == 'authenticode'/u,
+  );
   assert.match(prepare, /WINDOWS_CERT_PFX_PRESENT: \$\{\{ secrets\.WINDOWS_CERT_PFX != '' \}\}/u);
   assert.match(prepare, /WINDOWS_CERT_PASSWORD_PRESENT: \$\{\{ secrets\.WINDOWS_CERT_PASSWORD != '' \}\}/u);
   assert.doesNotMatch(
@@ -98,6 +104,7 @@ test('hold workflow delegates build and verification to exactly the canonical so
   assert.match(holdWorkflow, /FLOWZERO_LEGACY_BRIDGE_TARGET_VERSION/u);
   assert.match(holdWorkflow, /FLOWZERO_LEGACY_BRIDGE_TARGET_FEED_URL/u);
   assert.match(holdWorkflow, /FLOWZERO_LEGACY_BRIDGE_TARGET_SETUP_URL/u);
+  assert.match(holdWorkflow, /needs\.prepare-hold-intent\.outputs\.windows_signing_policy == 'authenticode'/u);
 });
 
 test('qualification builds the bridge from the exact source shared with the planned target', () => {

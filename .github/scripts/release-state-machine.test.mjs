@@ -47,6 +47,11 @@ function intent(overrides = {}) {
     },
     ...overrides,
   };
+  if (identity.requested_platforms.includes('windows-x64')) {
+    identity.windows_signing_policy ??= 'unsigned';
+  } else {
+    delete identity.windows_signing_policy;
+  }
   return { ...identity, transaction_id: contentId(identity) };
 }
 
@@ -220,6 +225,7 @@ function windowsCandidate(releaseIntent) {
   const candidate = {
     transaction_id: releaseIntent.transaction_id,
     platform: 'windows-x64',
+    verification_contract: 'windows_installer_v2',
     source: releaseIntent.source,
     release: releaseIntent.release,
     attempt: {
@@ -253,6 +259,7 @@ function windowsCandidate(releaseIntent) {
     ],
     update: {
       squirrel_releases: `${'d'.repeat(40)} ${nupkgName} 200\n`,
+      windows_signing_policy: releaseIntent.windows_signing_policy,
     },
   };
   return {
@@ -264,6 +271,7 @@ function windowsCandidate(releaseIntent) {
 
 function windowsVerification(candidate) {
   const setup = candidate.candidate.assets.find((asset) => asset.role === 'windows_setup');
+  const policy = candidate.candidate.update.windows_signing_policy;
   return {
     schema: 'flowzero.release_verification.v1',
     status: 'pass',
@@ -271,9 +279,16 @@ function windowsVerification(candidate) {
     version: candidate.candidate.release.version,
     source_head_sha: candidate.candidate.source.head_sha,
     platform: 'windows-x64',
+    candidate_id: candidate.candidate_id,
     subject: { name: setup.name, size: setup.size, sha256: setup.sha256 },
     evidence: [
-      { kind: 'windows_authenticode', status: 'pass', timestamp_present: true },
+      {
+        kind: 'windows_signing_policy',
+        status: 'pass',
+        policy,
+        observed_status: policy === 'authenticode' ? 'Valid' : 'NotSigned',
+        timestamp_present: policy === 'authenticode',
+      },
       { kind: 'windows_installer', status: 'pass' },
     ],
     verified_at: '2026-08-26T00:00:00Z',
@@ -754,7 +769,7 @@ test('macOS v2 requires distinct fixture and live StepFun verification receipts'
   }
 });
 
-test('validates the exact Windows Squirrel candidate and timestamped installer receipt', () => {
+test('validates exact Windows Squirrel candidates under explicit unsigned or Authenticode policy', () => {
   const candidate = windowsCandidate(intent());
   const built = buildPlatformCheckpoint({ phase: 'build_created', candidate });
   assert.doesNotThrow(() => buildPlatformCheckpoint({
@@ -763,14 +778,42 @@ test('validates the exact Windows Squirrel candidate and timestamped installer r
     parent: built,
     verifications: [windowsVerification(candidate)],
   }));
-  const missingTimestamp = windowsVerification(candidate);
-  missingTimestamp.evidence[0].timestamp_present = false;
+  const falselySigned = windowsVerification(candidate);
+  falselySigned.evidence[0].observed_status = 'Valid';
   assert.throws(() => buildPlatformCheckpoint({
     phase: 'platform_verified',
     candidate,
     parent: built,
+    verifications: [falselySigned],
+  }), /unsigned policy verification/u);
+  const authenticodeCandidate = windowsCandidate(intent({ windows_signing_policy: 'authenticode' }));
+  assert.doesNotThrow(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate: authenticodeCandidate,
+    parent: buildPlatformCheckpoint({ phase: 'build_created', candidate: authenticodeCandidate }),
+    verifications: [windowsVerification(authenticodeCandidate)],
+  }));
+  const missingTimestamp = windowsVerification(authenticodeCandidate);
+  missingTimestamp.evidence[0].timestamp_present = false;
+  assert.throws(() => buildPlatformCheckpoint({
+    phase: 'platform_verified',
+    candidate: authenticodeCandidate,
+    parent: buildPlatformCheckpoint({ phase: 'build_created', candidate: authenticodeCandidate }),
     verifications: [missingTimestamp],
-  }), /timestamped Authenticode/u);
+  }), /Authenticode policy verification/u);
+  for (const windowsSigningPolicy of [undefined, 'automatic']) {
+    const invalid = windowsCandidate(intent());
+    if (windowsSigningPolicy === undefined) {
+      delete invalid.candidate.update.windows_signing_policy;
+    } else {
+      invalid.candidate.update.windows_signing_policy = windowsSigningPolicy;
+    }
+    invalid.candidate_id = contentId(invalid.candidate);
+    assert.throws(
+      () => buildPlatformCheckpoint({ phase: 'build_created', candidate: invalid }),
+      /signing policy/u,
+    );
+  }
   const extraRow = windowsCandidate(intent());
   extraRow.candidate.update.squirrel_releases += `${'d'.repeat(40)} obsolete.nupkg 200\n`;
   extraRow.candidate_id = contentId(extraRow.candidate);

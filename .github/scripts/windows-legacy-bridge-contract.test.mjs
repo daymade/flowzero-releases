@@ -60,6 +60,7 @@ function bridgeCandidate(intent = bridgeIntent()) {
     bridge: intent.bridge,
     target: intent.target,
     affected_versions: intent.affected_versions,
+    windows_signing_policy: intent.windows_signing_policy,
     attempt: {
       release_infrastructure_sha: infraSha,
       workflow_run_id: '41',
@@ -88,6 +89,7 @@ function bridgeIntent() {
     targetVersion: '0.1.3-beta.2',
     targetFeedUrl,
     targetSetupUrl,
+    windowsSigningPolicy: 'unsigned',
   });
 }
 
@@ -105,6 +107,15 @@ function bridgeVerification(candidate = bridgeCandidate()) {
     affected_versions: candidate.candidate.affected_versions,
     evidence: {
       current_pointer_writes: 0,
+      windows_signing_policy: candidate.candidate.windows_signing_policy,
+      windows_signing: {
+        status: 'pass',
+        policy: candidate.candidate.windows_signing_policy,
+        observed_status: candidate.candidate.windows_signing_policy === 'authenticode'
+          ? 'Valid'
+          : 'NotSigned',
+        timestamp_present: candidate.candidate.windows_signing_policy === 'authenticode',
+      },
       target_routing: {
         embedded: true,
         version: candidate.candidate.target.version,
@@ -179,6 +190,7 @@ function targetCandidate(hold = bridgeHold()) {
   const candidate = {
     transaction_id: `sha256:${digest('9')}`,
     platform: 'windows-x64',
+    verification_contract: 'windows_installer_v2',
     source: { repository: 'daymade/flowzero', head_sha: sourceSha },
     release: { version: '0.1.3-beta.2', tag: 'v0.1.3-beta.2', channel: 'beta', variant: 'standard' },
     attempt: { release_infrastructure_sha: infraSha, workflow_run_id: '42', workflow_run_attempt: 1 },
@@ -189,6 +201,7 @@ function targetCandidate(hold = bridgeHold()) {
     ],
     update: {
       squirrel_releases: `${'e'.repeat(40)} ${nupkg} 210\n`,
+      windows_signing_policy: hold.hold.windows_signing_policy,
       windows_legacy_bridge: {
         schema: 'flowzero.windows_legacy_bridge_requirement.v1',
         purpose: LEGACY_BRIDGE_PURPOSE,
@@ -211,6 +224,7 @@ function acceptance(hold = bridgeHold(), target = targetCandidate(hold)) {
     schema: LEGACY_BRIDGE_TWO_HOP_ACCEPTANCE_SCHEMA,
     status: 'pass',
     platform: 'windows-x64',
+    windows_signing_policy: hold.hold.windows_signing_policy,
     bridge_candidate_id: hold.hold.candidate_id,
     target_candidate_id: target.candidate_id,
     affected_versions: ['0.1.2-beta.7'],
@@ -236,6 +250,7 @@ function rehashAcceptance(receipt) {
 
 function targetVerification(target) {
   const setup = target.candidate.assets.find((asset) => asset.role === 'windows_setup');
+  const policy = target.candidate.update.windows_signing_policy;
   return {
     schema: 'flowzero.release_verification.v1',
     status: 'pass',
@@ -243,9 +258,16 @@ function targetVerification(target) {
     version: target.candidate.release.version,
     source_head_sha: target.candidate.source.head_sha,
     platform: 'windows-x64',
+    candidate_id: target.candidate_id,
     subject: { name: setup.name, size: setup.size, sha256: setup.sha256 },
     evidence: [
-      { kind: 'windows_authenticode', status: 'pass', timestamp_present: true },
+      {
+        kind: 'windows_signing_policy',
+        status: 'pass',
+        policy,
+        observed_status: policy === 'authenticode' ? 'Valid' : 'NotSigned',
+        timestamp_present: policy === 'authenticode',
+      },
       { kind: 'windows_installer', status: 'pass' },
     ],
     verified_at: '2026-09-02T02:00:00.000Z',
@@ -521,6 +543,7 @@ test('normal release intent preserves the exact source-side Windows bridge argum
     headSha: sourceSha,
     platforms: 'windows-x64',
     variant: 'standard',
+    windowsSigningPolicy: 'unsigned',
     windowsLegacyBridgeHoldId: hold.hold_id,
     windowsLegacyBridgeTag: hold.hold.bridge.tag,
     windowsLegacyBridgeAffectedVersionsJson: '["0.1.2-beta.7"]',
@@ -538,6 +561,7 @@ test('normal release intent preserves the exact source-side Windows bridge argum
     headSha: sourceSha,
     platforms: 'windows-x64',
     variant: 'standard',
+    windowsSigningPolicy: 'unsigned',
     windowsLegacyBridgeHoldId: hold.hold_id,
     windowsLegacyBridgeTag: hold.hold.bridge.tag,
     windowsLegacyBridgeAffectedVersionsJson: '["0.1.2-beta.6","0.1.2-beta.7"]',
@@ -597,6 +621,7 @@ test('mirrored checkpoint, platform manifest, and archive preserve exact bridge 
       requested_platforms: ['windows-x64'],
       source: target.candidate.source,
       release: target.candidate.release,
+      windows_signing_policy: target.candidate.update.windows_signing_policy,
     },
     attempt: target.candidate.attempt,
   };
@@ -642,6 +667,7 @@ test('durable reservations block the bridge tag and target requirement omission'
       requested_platforms: ['windows-x64'],
       source: target.candidate.source,
       release: target.candidate.release,
+      windows_signing_policy: target.candidate.update.windows_signing_policy,
       windows_legacy_bridge: target.candidate.update.windows_legacy_bridge,
     },
   }, { env: storage.env, ...storage.dependencies }).status, 'reserved_target');
@@ -660,6 +686,7 @@ test('durable reservations block the bridge tag and target requirement omission'
       requested_platforms: ['windows-x64'],
       source: differentSource.candidate.source,
       release: target.candidate.release,
+      windows_signing_policy: target.candidate.update.windows_signing_policy,
       windows_legacy_bridge: target.candidate.update.windows_legacy_bridge,
     },
   }, { env: storage.env, ...storage.dependencies }), /exact shared source SHA/u);
