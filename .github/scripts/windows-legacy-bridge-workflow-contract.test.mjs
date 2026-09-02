@@ -111,6 +111,8 @@ test('hold workflow delegates build and verification to exactly the canonical so
     preflight,
     /reserve-intent|WINDOWS_CERT_PFX|WINDOWS_CERT_PASSWORD|continue-on-error|^\s+if:/mu,
   );
+  const prepare = jobBlock(holdWorkflow, 'prepare-hold-intent');
+  assert.doesNotMatch(prepare, /^    if:|continue-on-error:/mu);
   assert.match(holdWorkflow, /missing canonical bridge build script/u);
   assert.match(holdWorkflow, /missing canonical bridge verification script/u);
   assert.match(holdWorkflow, /validate-candidate/u);
