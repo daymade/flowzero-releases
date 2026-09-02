@@ -17,6 +17,20 @@ const WITHDRAWN_PLATFORM_STATE_KEY =
   'channels/beta/platforms/macos-arm64/states/withdrawn-v0.1.2-beta.8.json';
 const CURRENT_PLATFORM_CHANNEL_KEY =
   'channels/beta/platforms/macos-arm64/current.json';
+const WINDOWS_LEGACY_BRIDGE_ROOT =
+  `channels/beta/platforms/windows-x64/legacy-bridges/v0.1.4-beta.3`;
+const WINDOWS_LEGACY_BRIDGE_CANDIDATE_ID = 'a'.repeat(64);
+const WINDOWS_LEGACY_BRIDGE_ASSET_KEYS = [
+  'Flowzero-0.1.4-beta.3-Setup.exe',
+  'Flowzero-0.1.4-beta3-full.nupkg',
+  'RELEASES',
+].map((name) => (
+  `${WINDOWS_LEGACY_BRIDGE_ROOT}/candidates/${WINDOWS_LEGACY_BRIDGE_CANDIDATE_ID}/assets/${name}`
+));
+const WINDOWS_LEGACY_BRIDGE_CHECKPOINT_KEY =
+  `${WINDOWS_LEGACY_BRIDGE_ROOT}/checkpoints/${'b'.repeat(64)}.json`;
+const WINDOWS_LEGACY_BRIDGE_HOLD_KEY =
+  `${WINDOWS_LEGACY_BRIDGE_ROOT}/${'c'.repeat(64)}.json`;
 
 function makeObject(body = 'release') {
   return {
@@ -194,6 +208,43 @@ test('serves HEAD without reading the object body', async () => {
   assert.equal(response.headers.get('Content-Length'), '7');
   assert.equal(await response.text(), '');
   assert.deepEqual(calls, [['head', KEY]]);
+});
+
+test('serves only the exact immutable Windows legacy bridge download surface', async () => {
+  for (const key of [
+    ...WINDOWS_LEGACY_BRIDGE_ASSET_KEYS,
+    WINDOWS_LEGACY_BRIDGE_CHECKPOINT_KEY,
+    WINDOWS_LEGACY_BRIDGE_HOLD_KEY,
+  ]) {
+    const { calls, env } = makeEnvironment();
+    const response = await handleRequest(new Request(`https://example.test/${key}`), env);
+    assert.equal(response.status, 200, key);
+    assert.equal(response.headers.get('Cache-Control'), 'public, max-age=31536000, immutable');
+    assert.deepEqual(calls, [['get', key, undefined]], key);
+  }
+
+  for (const key of [
+    `${WINDOWS_LEGACY_BRIDGE_ROOT}/candidate.json`,
+    `channels/stable/platforms/windows-x64/legacy-bridges/v0.1.4-beta.3/${'c'.repeat(64)}.json`,
+    `channels/beta/platforms/windows-x64/legacy-bridges/v0.1.4/${'c'.repeat(64)}.json`,
+    `channels/beta/platforms/windows-x64/legacy-bridges/vNOT-A-TAG/${'c'.repeat(64)}.json`,
+    `${WINDOWS_LEGACY_BRIDGE_ROOT}/candidates/not-a-content-id/assets/RELEASES`,
+    `${WINDOWS_LEGACY_BRIDGE_ROOT}/candidates/${WINDOWS_LEGACY_BRIDGE_CANDIDATE_ID}/assets/Flowzero-private-Setup.exe`,
+    `${WINDOWS_LEGACY_BRIDGE_ROOT}/candidates/${WINDOWS_LEGACY_BRIDGE_CANDIDATE_ID}/assets/Flowzero-9.9.9-full.nupkg`,
+    `${WINDOWS_LEGACY_BRIDGE_ROOT}/candidates/${WINDOWS_LEGACY_BRIDGE_CANDIDATE_ID}/assets/flowzero-0.1.4-beta.3-Setup.exe`,
+    `${WINDOWS_LEGACY_BRIDGE_ROOT}/candidates/${WINDOWS_LEGACY_BRIDGE_CANDIDATE_ID}/assets/private.json`,
+    `${WINDOWS_LEGACY_BRIDGE_ROOT}/checkpoints/not-a-content-id.json`,
+    `${WINDOWS_LEGACY_BRIDGE_ROOT}/not-a-content-id.json`,
+    `channels/beta/platforms/macos-arm64/legacy-bridges/v0.1.4-beta.3/${'c'.repeat(64)}.json`,
+    `${WINDOWS_LEGACY_BRIDGE_ROOT}/candidates/${WINDOWS_LEGACY_BRIDGE_CANDIDATE_ID}/assets%2fRELEASES`,
+    `${WINDOWS_LEGACY_BRIDGE_ROOT}/candidates/${WINDOWS_LEGACY_BRIDGE_CANDIDATE_ID}/assets%252fRELEASES`,
+    `${WINDOWS_LEGACY_BRIDGE_ROOT}/candidates/${WINDOWS_LEGACY_BRIDGE_CANDIDATE_ID}/assets/%2e%2e/private.json`,
+  ]) {
+    const { calls, env } = makeEnvironment();
+    const response = await handleRequest(new Request(`https://example.test/${key}`), env);
+    assert.equal(response.status, 404, key);
+    assert.deepEqual(calls, [], key);
+  }
 });
 
 test('serves one byte range with RFC response headers', async () => {
