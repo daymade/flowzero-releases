@@ -15,15 +15,34 @@ inputs:
   output-receipt:
     description: Path for the platform promotion receipt
     required: true
+  compatibility-binding:
+    description: Optional content-addressed Windows legacy bridge compatibility binding
+    required: false
+    default: ''
+  bridge-hold:
+    description: Optional exact Windows legacy bridge qualification hold
+    required: false
+    default: ''
 
 runs:
   using: composite
   steps:
     - name: Promote one platform pointer
       shell: bash
-      run: >-
-        node "$GITHUB_ACTION_PATH/../../scripts/promote-platform-channel.mjs"
-        --manifest "${{ inputs.platform-manifest }}"
-        --checkpoint "${{ inputs.mirrored-checkpoint }}"
-        --allow-downgrade "${{ inputs.allow-downgrade }}"
-        --output "${{ inputs.output-receipt }}"
+      run: |
+        set -euo pipefail
+        compatibility_args=()
+        if [[ -n "${{ inputs.compatibility-binding }}" || -n "${{ inputs.bridge-hold }}" ]]; then
+          test -n "${{ inputs.compatibility-binding }}"
+          test -n "${{ inputs.bridge-hold }}"
+          compatibility_args+=(
+            --compatibility-binding "${{ inputs.compatibility-binding }}"
+            --bridge-hold "${{ inputs.bridge-hold }}"
+          )
+        fi
+        node "$GITHUB_ACTION_PATH/../../scripts/promote-platform-channel.mjs" \
+          --manifest "${{ inputs.platform-manifest }}" \
+          --checkpoint "${{ inputs.mirrored-checkpoint }}" \
+          --allow-downgrade "${{ inputs.allow-downgrade }}" \
+          "${compatibility_args[@]}" \
+          --output "${{ inputs.output-receipt }}"

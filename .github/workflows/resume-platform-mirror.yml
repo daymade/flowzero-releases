@@ -96,6 +96,7 @@ jobs:
             --verification-run-id "${{ inputs.verification_run_id || inputs.source_run_id }}" \
             --candidate-artifact-id "${{ inputs.candidate_artifact_id }}" \
             --verification-artifact-id "${{ inputs.verification_artifact_id }}" \
+            --platform "${{ inputs.platform }}" \
             --toolkit-sha "${{ inputs.toolkit_sha }}" \
             --output "$RUNNER_TEMP/state/actions-provenance.json"
         env:
@@ -237,6 +238,12 @@ jobs:
               --verification "$RUNNER_TEMP/platform-verification/live-stepfun-timeline.json"
             )
           fi
+          if [[ -f "$RUNNER_TEMP/platform-verification/compatibility-binding.json" ]]; then
+            verification_args+=(
+              --legacy-bridge-binding "$RUNNER_TEMP/platform-verification/compatibility-binding.json"
+              --legacy-bridge-hold "$RUNNER_TEMP/platform-verification/bridge-hold.json"
+            )
+          fi
           node .github/scripts/release-platform-checkpoint.mjs \
             --phase mirrored \
             --candidate "$RUNNER_TEMP/platform-final/evidence/candidate.json" \
@@ -260,6 +267,8 @@ jobs:
           mirrored-checkpoint: ${{ runner.temp }}/state/mirrored.json
           allow-downgrade: ${{ inputs.allow_downgrade }}
           output-receipt: ${{ runner.temp }}/state/promotion-receipt.json
+          compatibility-binding: ${{ runner.temp }}/platform-verification/compatibility-binding.json
+          bridge-hold: ${{ runner.temp }}/platform-verification/bridge-hold.json
         env:
           GITHUB_TOKEN: ${{ github.token }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}

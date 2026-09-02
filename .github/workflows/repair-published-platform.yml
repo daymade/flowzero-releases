@@ -110,14 +110,23 @@ jobs:
           ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
 
       - name: Freeze repaired mirrored checkpoint
-        run: >-
-          node .github/scripts/release-platform-checkpoint.mjs
-          --phase mirrored
-          --candidate "$RUNNER_TEMP/rehydrated/evidence/candidate.json"
-          --parent "$RUNNER_TEMP/state/platform-verified.json"
-          --verification "$RUNNER_TEMP/rehydrated/evidence/verification.json"
-          --mirror-receipt "$RUNNER_TEMP/state/mirror-receipt.json"
-          --output "$RUNNER_TEMP/state/mirrored.json"
+        run: |
+          set -euo pipefail
+          bridge_args=()
+          if [[ -f "$RUNNER_TEMP/rehydrated/evidence/compatibility-binding.json" ]]; then
+            bridge_args+=(
+              --legacy-bridge-binding "$RUNNER_TEMP/rehydrated/evidence/compatibility-binding.json"
+              --legacy-bridge-hold "$RUNNER_TEMP/rehydrated/evidence/bridge-hold.json"
+            )
+          fi
+          node .github/scripts/release-platform-checkpoint.mjs \
+            --phase mirrored \
+            --candidate "$RUNNER_TEMP/rehydrated/evidence/candidate.json" \
+            --parent "$RUNNER_TEMP/state/platform-verified.json" \
+            --verification "$RUNNER_TEMP/rehydrated/evidence/verification.json" \
+            --mirror-receipt "$RUNNER_TEMP/state/mirror-receipt.json" \
+            "${bridge_args[@]}" \
+            --output "$RUNNER_TEMP/state/mirrored.json"
 
       - name: Generate repaired platform manifest
         run: >-

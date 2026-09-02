@@ -19,6 +19,7 @@ function parseArguments(argv) {
     '--verification-run-id',
     '--candidate-artifact-id',
     '--verification-artifact-id',
+    '--platform',
     '--toolkit-sha',
     '--output',
   ]);
@@ -43,6 +44,7 @@ export function validateActionsArtifactProvenance({
   verificationRunId,
   candidateArtifactId,
   verificationArtifactId,
+  platform,
   toolkitSha,
 }) {
   for (const [label, value] of [
@@ -53,11 +55,13 @@ export function validateActionsArtifactProvenance({
   ]) {
     assert(/^\d+$/.test(String(value || '')), `${label} ID is invalid`);
   }
+  assert(['macos-arm64', 'windows-x64'].includes(platform), 'recovery platform is invalid');
   assert(/^[a-f0-9]{40}$/.test(toolkitSha || ''), 'recovery toolkit SHA is invalid');
   assert(String(candidateArtifact?.id) === String(candidateArtifactId), 'candidate artifact ID mismatch');
   assert(String(candidateArtifact?.workflow_run?.id) === String(sourceRunId), 'candidate artifact run mismatch');
   assert(candidateArtifact?.expired === false, 'candidate artifact is expired');
-  assert(/^macos-final-/u.test(candidateArtifact?.name || ''), 'candidate artifact name is invalid');
+  const candidateNamePattern = platform === 'macos-arm64' ? /^macos-final-/u : /^windows-final-/u;
+  assert(candidateNamePattern.test(candidateArtifact?.name || ''), 'candidate artifact name is invalid');
   assert(String(verificationArtifact?.id) === String(verificationArtifactId), 'verification artifact ID mismatch');
   assert(String(verificationArtifact?.workflow_run?.id) === String(verificationRunId), 'verification artifact run mismatch');
   assert(verificationArtifact?.expired === false, 'verification artifact is expired');
@@ -66,6 +70,7 @@ export function validateActionsArtifactProvenance({
 
   const separateVerificationRun = String(verificationRunId) !== String(sourceRunId);
   if (separateVerificationRun) {
+    assert(platform === 'macos-arm64', 'Windows verification must come from its original release run');
     assert(verificationRun.path === '.github/workflows/reverify-macos-business.yml', 'verification workflow path is untrusted');
     assert(verificationRun.event === 'workflow_dispatch', 'verification workflow event is untrusted');
     assert(verificationRun.head_branch === 'main', 'verification workflow branch is untrusted');
@@ -77,11 +82,15 @@ export function validateActionsArtifactProvenance({
     );
   } else {
     assert(verificationRun.path === '.github/workflows/release.yml', 'source verification workflow path is untrusted');
-    assert(/^macos-verification-/u.test(verificationArtifact?.name || ''), 'source verification artifact name is invalid');
+    const verificationNamePattern = platform === 'macos-arm64'
+      ? /^macos-verification-/u
+      : /^windows-verification-/u;
+    assert(verificationNamePattern.test(verificationArtifact?.name || ''), 'source verification artifact name is invalid');
   }
 
   return {
     schema: ARTIFACT_PROVENANCE_SCHEMA,
+    platform,
     candidate: {
       artifact_id: String(candidateArtifactId),
       run_id: String(sourceRunId),
@@ -120,6 +129,7 @@ export async function main(argv = process.argv.slice(2)) {
     verificationRunId: args['--verification-run-id'],
     candidateArtifactId: args['--candidate-artifact-id'],
     verificationArtifactId: args['--verification-artifact-id'],
+    platform: args['--platform'],
     toolkitSha: args['--toolkit-sha'],
   });
   await atomicWriteJson(args['--output'], provenance);

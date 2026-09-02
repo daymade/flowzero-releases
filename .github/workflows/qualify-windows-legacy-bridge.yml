@@ -1,0 +1,425 @@
+name: Qualify Windows Legacy Bridge
+run-name: hold Windows bridge ${{ github.event.client_payload.intent.bridge.version || inputs.bridge_version }}
+
+on:
+  repository_dispatch:
+    types: [windows_legacy_bridge_qualification]
+  workflow_dispatch:
+    inputs:
+      bridge_version:
+        description: Exact compatibility bridge version built from the shared target source
+        required: true
+        type: string
+      head_sha:
+        description: Exact 40-character private source SHA shared by the bridge and planned target
+        required: true
+        type: string
+      affected_versions_json:
+        description: Must be the exact qualified allowlist ["0.1.2-beta.7"]
+        required: true
+        type: string
+      target_version:
+        description: Exact planned full target version newer than the bridge
+        required: true
+        type: string
+      target_feed_url:
+        description: Exact version-routed Squirrel feed URL embedded in the bridge
+        required: true
+        type: string
+      target_setup_url:
+        description: Exact manual recovery Setup URL embedded in the bridge
+        required: true
+        type: string
+      transaction_id:
+        description: Exact content-addressed Windows legacy bridge transaction ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-legacy-bridge-${{ github.event.client_payload.intent.bridge.version || inputs.bridge_version }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  prepare-hold-intent:
+    runs-on: ubuntu-24.04
+    outputs:
+      bridge_version: ${{ steps.identity.outputs.bridge_version }}
+      head_sha: ${{ steps.identity.outputs.head_sha }}
+      channel: ${{ steps.identity.outputs.channel }}
+      target_version: ${{ steps.identity.outputs.target_version }}
+      target_feed_url: ${{ steps.identity.outputs.target_feed_url }}
+      target_setup_url: ${{ steps.identity.outputs.target_setup_url }}
+      transaction_id: ${{ steps.identity.outputs.transaction_id }}
+      transaction_short: ${{ steps.identity.outputs.transaction_short }}
+      intent_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Checkout frozen release infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: release-infra
+          persist-credentials: false
+
+      - name: Build or read the explicit qualification-hold intent
+        id: requested-identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/legacy-bridge-intent"
+          if [[ "$GITHUB_EVENT_NAME" == 'repository_dispatch' ]]; then
+            # Node expands process.env, never the shell.
+            # shellcheck disable=SC2016
+            node -e 'require("node:fs").writeFileSync(process.env.OUTPUT, `${process.env.INTENT_JSON}\n`, { mode: 0o600 })'
+            node release-infra/.github/scripts/windows-legacy-bridge-contract.mjs validate-intent \
+              --intent "$RUNNER_TEMP/legacy-bridge-intent/intent.json"
+          else
+            node release-infra/.github/scripts/windows-legacy-bridge-contract.mjs build-intent \
+              --source-head-sha "$INPUT_SOURCE_HEAD_SHA" \
+              --bridge-version "$INPUT_BRIDGE_VERSION" \
+              --affected-versions "$INPUT_AFFECTED_VERSIONS_JSON" \
+              --target-version "$INPUT_TARGET_VERSION" \
+              --target-feed-url "$INPUT_TARGET_FEED_URL" \
+              --target-setup-url "$INPUT_TARGET_SETUP_URL" \
+              --transaction-id "$INPUT_TRANSACTION_ID" \
+              --output "$RUNNER_TEMP/legacy-bridge-intent/intent.json"
+          fi
+          # Export only identity read from the same validated intent that every
+          # later qualification and reservation step consumes.
+          # shellcheck disable=SC2016
+          node -e '
+            const fs = require("node:fs");
+            const intent = JSON.parse(fs.readFileSync(process.env.INTENT));
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, [
+              `head_sha=${intent.source.head_sha}`,
+              `target_version=${intent.target.version}`,
+              "",
+            ].join("\n"));
+          '
+        env:
+          INTENT_JSON: ${{ toJSON(github.event.client_payload.intent) }}
+          INTENT: ${{ runner.temp }}/legacy-bridge-intent/intent.json
+          OUTPUT: ${{ runner.temp }}/legacy-bridge-intent/intent.json
+          INPUT_SOURCE_HEAD_SHA: ${{ inputs.head_sha }}
+          INPUT_BRIDGE_VERSION: ${{ inputs.bridge_version }}
+          INPUT_AFFECTED_VERSIONS_JSON: ${{ inputs.affected_versions_json }}
+          INPUT_TARGET_VERSION: ${{ inputs.target_version }}
+          INPUT_TARGET_FEED_URL: ${{ inputs.target_feed_url }}
+          INPUT_TARGET_SETUP_URL: ${{ inputs.target_setup_url }}
+          INPUT_TRANSACTION_ID: ${{ inputs.transaction_id }}
+
+      - name: Verify the frozen hold contracts
+        run: node --test release-infra/.github/scripts/*.test.mjs release-infra/workers/release-download/test/*.test.js
+
+      - name: Reject withdrawn bridge or target versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          bridge_tag="$(node -p "JSON.parse(require('node:fs').readFileSync(process.env.INTENT)).bridge.tag")"
+          target_tag="$(node -p "JSON.parse(require('node:fs').readFileSync(process.env.INTENT)).target.tag")"
+          node release-infra/.github/scripts/check-release-tombstone.mjs --tag "$bridge_tag"
+          node release-infra/.github/scripts/check-release-tombstone.mjs --tag "$target_tag"
+        env:
+          INTENT: ${{ runner.temp }}/legacy-bridge-intent/intent.json
+
+      - name: Checkout the exact shared private source before reserving tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ steps.requested-identity.outputs.head_sha }}
+          path: flowzero-source-qualification
+          lfs: false
+          persist-credentials: false
+
+      - name: Qualify the shared source before any R2 reservation write
+        shell: bash
+        working-directory: flowzero-source-qualification
+        run: |
+          set -euo pipefail
+          actual_head="$(git rev-parse HEAD)"
+          package_version="$(node -p "require('./apps/desktop/package.json').version")"
+          node ../release-infra/.github/scripts/windows-legacy-bridge-contract.mjs validate-shared-source \
+            --intent "$RUNNER_TEMP/legacy-bridge-intent/intent.json" \
+            --checked-out-head-sha "$actual_head" \
+            --source-package-version "$package_version"
+          status="$(gh api "repos/daymade/flowzero/compare/${QUALIFIED_SOURCE_HEAD_SHA}...main" --jq '.status')"
+          if [[ "$status" != 'ahead' && "$status" != 'identical' ]]; then
+            echo "shared source SHA is not on private main: $status" >&2
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          QUALIFIED_SOURCE_HEAD_SHA: ${{ steps.requested-identity.outputs.head_sha }}
+
+      - name: Reserve the bridge and planned target tags outside the normal release lane
+        run: >-
+          node release-infra/.github/scripts/windows-legacy-bridge-reservation.mjs reserve-intent
+          --intent "$RUNNER_TEMP/legacy-bridge-intent/intent.json"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+
+      - name: Export exact hold identity
+        id: identity
+        shell: bash
+        run: |
+          # Node expands its own template literals.
+          # shellcheck disable=SC2016
+          node -e '
+            const fs = require("node:fs");
+            const intent = JSON.parse(fs.readFileSync(process.env.INTENT));
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, [
+              `bridge_version=${intent.bridge.version}`,
+              `head_sha=${intent.source.head_sha}`,
+              `channel=${intent.bridge.channel}`,
+              `target_version=${intent.target.version}`,
+              `target_feed_url=${intent.target.feed_url}`,
+              `target_setup_url=${intent.target.setup_url}`,
+              `transaction_id=${intent.transaction_id}`,
+              `transaction_short=${intent.transaction_id.slice(7, 23)}`,
+              "",
+            ].join("\n"));
+          '
+        env:
+          INTENT: ${{ runner.temp }}/legacy-bridge-intent/intent.json
+
+      - name: Upload immutable qualification-hold intent
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-legacy-bridge-intent-${{ steps.identity.outputs.transaction_short }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/legacy-bridge-intent/intent.json
+          if-no-files-found: error
+          retention-days: 30
+
+  build-bridge:
+    needs: prepare-hold-intent
+    runs-on: windows-2025
+    timeout-minutes: 360
+    outputs:
+      candidate_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Checkout frozen release infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: release-infra
+          persist-credentials: false
+
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ needs.prepare-hold-intent.outputs.head_sha }}
+          path: flowzero
+          lfs: true
+          persist-credentials: false
+
+      - name: Download exact qualification-hold intent
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.prepare-hold-intent.outputs.intent_artifact_id }}
+          path: ${{ runner.temp }}/legacy-bridge-intent
+
+      - name: Re-prove the frozen shared source and canonical bridge entrypoint
+        shell: pwsh
+        working-directory: flowzero
+        run: |
+          $actualHead = git rev-parse HEAD
+          $packageVersion = node -p "require('./apps/desktop/package.json').version"
+          node ../release-infra/.github/scripts/windows-legacy-bridge-contract.mjs validate-shared-source `
+            --intent "$env:RUNNER_TEMP/legacy-bridge-intent/intent.json" `
+            --checked-out-head-sha "$actualHead" `
+            --source-package-version "$packageVersion"
+          node -e "const s=require('./package.json').scripts;if(!s?.['release:build:windows-legacy-bridge:ci'])throw new Error('missing canonical bridge build script')"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: flowzero/.nvmrc
+          cache: pnpm
+          cache-dependency-path: flowzero/pnpm-lock.yaml
+
+      - name: Install exact source dependencies
+        working-directory: flowzero
+        run: pnpm install --frozen-lockfile
+        env:
+          SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Build the signed compatibility bridge through the source SSOT
+        working-directory: flowzero
+        run: >-
+          pnpm run release:build:windows-legacy-bridge:ci --
+          --intent "$env:RUNNER_TEMP/legacy-bridge-intent/intent.json"
+          --output-root "$env:RUNNER_TEMP/windows-legacy-bridge"
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          FLOWZERO_LEGACY_BRIDGE_TARGET_VERSION: ${{ needs.prepare-hold-intent.outputs.target_version }}
+          FLOWZERO_LEGACY_BRIDGE_TARGET_FEED_URL: ${{ needs.prepare-hold-intent.outputs.target_feed_url }}
+          FLOWZERO_LEGACY_BRIDGE_TARGET_SETUP_URL: ${{ needs.prepare-hold-intent.outputs.target_setup_url }}
+
+      - name: Fail closed unless the bridge candidate matches the exact intent
+        shell: pwsh
+        run: >-
+          node release-infra/.github/scripts/windows-legacy-bridge-contract.mjs validate-candidate
+          --intent "$env:RUNNER_TEMP/legacy-bridge-intent/intent.json"
+          --candidate "$env:RUNNER_TEMP/windows-legacy-bridge/evidence/candidate.json"
+
+      - name: Upload immutable bridge candidate
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-legacy-bridge-candidate-${{ needs.prepare-hold-intent.outputs.transaction_short }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-legacy-bridge
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  accept-bridge:
+    needs: [prepare-hold-intent, build-bridge]
+    runs-on: windows-2025
+    timeout-minutes: 180
+    outputs:
+      verification_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Checkout frozen release infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: release-infra
+          persist-credentials: false
+
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ needs.prepare-hold-intent.outputs.head_sha }}
+          path: flowzero
+          lfs: false
+          persist-credentials: false
+
+      - name: Download exact bridge candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.build-bridge.outputs.candidate_artifact_id }}
+          path: ${{ runner.temp }}/windows-legacy-bridge
+
+      - name: Download exact qualification-hold intent
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.prepare-hold-intent.outputs.intent_artifact_id }}
+          path: ${{ runner.temp }}/legacy-bridge-intent
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: flowzero/.nvmrc
+          cache: pnpm
+          cache-dependency-path: flowzero/pnpm-lock.yaml
+
+      - name: Install exact verifier dependencies
+        working-directory: flowzero
+        run: pnpm install --frozen-lockfile
+        env:
+          SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Prove canonical bridge verification entrypoint exists
+        working-directory: flowzero
+        run: node -e "const s=require('./package.json').scripts;if(!s?.['release:verify:windows-legacy-bridge:ci'])throw new Error('missing canonical bridge verification script')"
+
+      - name: Verify every declared old-to-bridge route through the source SSOT
+        working-directory: flowzero
+        run: >-
+          pnpm run release:verify:windows-legacy-bridge:ci --
+          --intent "$env:RUNNER_TEMP/legacy-bridge-intent/intent.json"
+          --candidate "$env:RUNNER_TEMP/windows-legacy-bridge/evidence/candidate.json"
+          --asset-root "$env:RUNNER_TEMP/windows-legacy-bridge/artifacts"
+          --output "$env:RUNNER_TEMP/windows-legacy-bridge-verification/verification.json"
+        env:
+          FLOWZERO_LEGACY_BRIDGE_TARGET_VERSION: ${{ needs.prepare-hold-intent.outputs.target_version }}
+          FLOWZERO_LEGACY_BRIDGE_TARGET_FEED_URL: ${{ needs.prepare-hold-intent.outputs.target_feed_url }}
+          FLOWZERO_LEGACY_BRIDGE_TARGET_SETUP_URL: ${{ needs.prepare-hold-intent.outputs.target_setup_url }}
+
+      - name: Fail closed unless qualification proves the bridge purpose and all routes
+        shell: pwsh
+        run: >-
+          node release-infra/.github/scripts/windows-legacy-bridge-contract.mjs validate-verification
+          --candidate "$env:RUNNER_TEMP/windows-legacy-bridge/evidence/candidate.json"
+          --verification "$env:RUNNER_TEMP/windows-legacy-bridge-verification/verification.json"
+
+      - name: Upload immutable bridge verification
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-legacy-bridge-verification-${{ needs.prepare-hold-intent.outputs.transaction_short }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-legacy-bridge-verification/verification.json
+          if-no-files-found: error
+          retention-days: 30
+
+  mirror-to-hold:
+    needs: [prepare-hold-intent, build-bridge, accept-bridge]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    concurrency:
+      group: flowzero-promote-${{ needs.prepare-hold-intent.outputs.channel }}-windows-x64
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: Checkout frozen release infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: release-infra
+          persist-credentials: false
+
+      - name: Download exact bridge candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.build-bridge.outputs.candidate_artifact_id }}
+          path: ${{ runner.temp }}/windows-legacy-bridge
+
+      - name: Download exact bridge verification
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.accept-bridge.outputs.verification_artifact_id }}
+          path: ${{ runner.temp }}/windows-legacy-bridge-verification
+
+      - name: Mirror immutable bridge assets and freeze qualification hold
+        run: >-
+          node release-infra/.github/scripts/mirror-windows-legacy-bridge.mjs
+          --candidate "$RUNNER_TEMP/windows-legacy-bridge/evidence/candidate.json"
+          --verification "$RUNNER_TEMP/windows-legacy-bridge-verification/verification.json"
+          --asset-root "$RUNNER_TEMP/windows-legacy-bridge/artifacts"
+          --output-dir "$RUNNER_TEMP/windows-legacy-bridge-hold"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+          R2_PUBLIC_BASE_URL: https://downloads.flowzero.app
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+          ALIYUN_OSS_ENDPOINT: https://oss-cn-beijing.aliyuncs.com
+          ALIYUN_OSS_REGION: cn-beijing
+          ALIYUN_OSS_BUCKET: flowzero-releases-cn
+          ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
+
+      - name: Preserve held bridge state without promotion, canary, or archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-legacy-bridge-hold-${{ needs.prepare-hold-intent.outputs.transaction_short }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-legacy-bridge-hold
+          if-no-files-found: error
+          retention-days: 30

@@ -50,23 +50,40 @@ function responseForBody(body) {
   });
 }
 
-test('creates one durable R2 owner with a conditional write and verifies readback', () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'flowzero-claim-test-'));
-  let storedBody = null;
+function fakeR2(initial = new Map()) {
+  const objects = new Map(initial);
   const calls = [];
-  const runCommand = (command, args) => {
-    calls.push([command, ...args]);
-    if (args[1] === 'put-object') {
-      storedBody = readFileSync(args[args.indexOf('--body') + 1], 'utf8');
+  const runCommand = (_command, args) => {
+    calls.push(args);
+    const operation = args[1];
+    const key = args[args.indexOf('--key') + 1];
+    if (operation === 'head-object') {
+      const body = objects.get(key);
+      return body
+        ? { status: 0, stdout: responseForBody(body), stderr: '' }
+        : { status: 1, stdout: '', stderr: 'NotFound' };
+    }
+    if (operation === 'put-object') {
+      if (objects.has(key)) return { status: 255, stdout: '', stderr: 'PreconditionFailed' };
+      objects.set(key, readFileSync(args[args.indexOf('--body') + 1], 'utf8'));
       return { status: 0, stdout: '{}', stderr: '' };
     }
-    if (args[1] === 'get-object') {
-      const destination = args[args.indexOf('--endpoint-url') - 1];
-      writeFileSync(destination, storedBody);
-      return { status: 0, stdout: responseForBody(storedBody), stderr: '' };
+    if (operation === 'get-object') {
+      const body = objects.get(key);
+      if (!body) return { status: 1, stdout: '', stderr: 'NotFound' };
+      const endpointIndex = args.indexOf('--endpoint-url');
+      const destination = args.at(-1) === 'json' ? args[endpointIndex - 1] : args.at(-1);
+      writeFileSync(destination, body);
+      return { status: 0, stdout: responseForBody(body), stderr: '' };
     }
-    throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+    throw new Error(`unexpected args: ${args.join(' ')}`);
   };
+  return { objects, calls, runCommand };
+}
+
+test('creates one durable R2 owner with a conditional write and verifies readback', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'flowzero-claim-test-'));
+  const { calls, runCommand } = fakeR2();
   const result = claimReleaseTransaction(transaction('41'), {
     env: fakeEnvironment(root),
     runCommand,
@@ -81,15 +98,8 @@ test('same token and intent returns the original owner without a second side eff
   const firstClaim = buildTransactionOwnerClaim(transaction('41'));
   const existingBody = `${JSON.stringify(firstClaim)}\n`;
   const root = mkdtempSync(path.join(os.tmpdir(), 'flowzero-claim-test-'));
-  const runCommand = (_command, args) => {
-    if (args[1] === 'put-object') return { status: 255, stdout: '', stderr: 'PreconditionFailed' };
-    if (args[1] === 'get-object') {
-      const destination = args[args.indexOf('--endpoint-url') - 1];
-      writeFileSync(destination, existingBody);
-      return { status: 0, stdout: responseForBody(existingBody), stderr: '' };
-    }
-    throw new Error(`unexpected args: ${args.join(' ')}`);
-  };
+  const ownerKey = 'release-control/releases/v1.2.3-beta.4/owner.json';
+  const { runCommand } = fakeR2(new Map([[ownerKey, existingBody]]));
   const result = claimReleaseTransaction(transaction('42'), {
     env: fakeEnvironment(root),
     runCommand,

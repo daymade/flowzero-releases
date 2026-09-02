@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import { main as initializeEmptyPlatformChannel } from './initialize-empty-platform-channel.mjs';
-import { putImmutableJson } from './promote-platform-channel.mjs';
+import {
+  advanceCurrentPointerOnce,
+  putImmutableJson,
+  putCurrentJson,
+} from './promote-platform-channel.mjs';
 import {
   verifyChannelCanary,
   verifyChannelCanaryWithReceipt,
@@ -30,6 +35,86 @@ test('immutable small state is create-or-prove after a concurrent or partial wri
     r2Head: () => ({ ...matchingHead, Metadata: { sha256: 'b'.repeat(64) } }),
     run: () => ({ status: 0 }),
   }), /digest conflict/u);
+});
+
+test('two promotion invocations perform exactly one current pointer write', () => {
+  const targetManifest = {
+    schema: 'flowzero.update_platform_manifest.v1',
+    channel: 'beta',
+    platform: 'windows-x64',
+    state: 'published',
+    tag: 'v0.1.3-beta.2',
+    version: '0.1.3-beta.2',
+    transaction_id: `sha256:${'a'.repeat(64)}`,
+    checkpoint_id: `sha256:${'b'.repeat(64)}`,
+    published_at: '2026-09-02T00:00:00.000Z',
+    assets: [],
+  };
+  const targetBytes = Buffer.from(`${JSON.stringify(targetManifest)}\n`);
+  const targetDigestHex = createHash('sha256').update(targetBytes).digest('hex');
+  const targetDigestBase64 = createHash('sha256').update(targetBytes).digest('base64');
+  let state = { head: null, manifest: null };
+  let writes = 0;
+  const invoke = () => advanceCurrentPointerOnce({
+    before: state,
+    targetManifest,
+    targetBytes,
+    targetDigestHex,
+    targetDigestBase64,
+    write: () => {
+      writes += 1;
+      state = {
+        head: {
+          ContentLength: targetBytes.length,
+          Metadata: { sha256: targetDigestHex },
+          ChecksumSHA256: targetDigestBase64,
+        },
+        bytes: targetBytes,
+        body_sha256: targetDigestHex,
+        manifest: targetManifest,
+      };
+      return { write_performed: true, recovered_after_lost_response: false };
+    },
+  });
+  assert.equal(invoke().write_performed, true);
+  assert.equal(invoke().write_performed, false);
+  assert.equal(writes, 1);
+});
+
+test('lost current CAS response is closed by an independent exact readback', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'flowzero-current-cas-'));
+  const filePath = path.join(root, 'current.json');
+  const bytes = Buffer.from('{"state":"published"}\n');
+  await writeFile(filePath, bytes);
+  const digestHexValue = createHash('sha256').update(bytes).digest('hex');
+  const digestBase64Value = createHash('sha256').update(bytes).digest('base64');
+  let calls = 0;
+  const result = putCurrentJson(
+    { R2_BUCKET: 'test', R2_ENDPOINT: 'https://r2.example.test' },
+    'channels/beta/platforms/windows-x64/current.json',
+    filePath,
+    digestHexValue,
+    digestBase64Value,
+    null,
+    {
+      run: () => {
+        calls += 1;
+        return { status: 1, stderr: 'connection reset after request body' };
+      },
+      readCurrent: () => ({
+        head: {
+          ContentLength: bytes.length,
+          Metadata: { sha256: digestHexValue },
+          ChecksumSHA256: digestBase64Value,
+        },
+        bytes,
+        body_sha256: digestHexValue,
+        manifest: { state: 'published' },
+      }),
+    },
+  );
+  assert.deepEqual(result, { write_performed: true, recovered_after_lost_response: true });
+  assert.equal(calls, 1);
 });
 
 test('empty initialization refuses a platform that already has published snapshots', () => {

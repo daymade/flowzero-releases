@@ -35,6 +35,18 @@ on:
         options:
           - standard
           - offline
+      windows_legacy_bridge_hold_id:
+        description: Optional exact sha256 hold ID required by a Windows target
+        required: false
+        type: string
+      windows_legacy_bridge_tag:
+        description: Optional exact canonical bridge tag required by a Windows target
+        required: false
+        type: string
+      windows_legacy_bridge_affected_versions_json:
+        description: Optional exact JSON allowlist; currently ["0.1.2-beta.7"]
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -59,6 +71,10 @@ jobs:
       macos_requested: ${{ steps.transaction.outputs.macos_requested }}
       windows_requested: ${{ steps.transaction.outputs.windows_requested }}
       windows_nupkg_name: ${{ steps.transaction.outputs.windows_nupkg_name }}
+      windows_legacy_bridge_required: ${{ steps.transaction.outputs.windows_legacy_bridge_required }}
+      windows_legacy_bridge_hold_id: ${{ steps.transaction.outputs.windows_legacy_bridge_hold_id }}
+      windows_legacy_bridge_tag: ${{ steps.transaction.outputs.windows_legacy_bridge_tag }}
+      windows_legacy_bridge_affected_versions_json: ${{ steps.transaction.outputs.windows_legacy_bridge_affected_versions_json }}
       is_owner: ${{ steps.claim.outputs.is_owner }}
       owner_run_id: ${{ steps.claim.outputs.owner_run_id }}
       owner_object_key: ${{ steps.claim.outputs.owner_object_key }}
@@ -88,6 +104,16 @@ jobs:
 
       - name: Verify the frozen release infrastructure contracts
         run: node --test .github/scripts/*.test.mjs workers/release-download/test/*.test.js
+
+      - name: Enforce durable Windows bridge and target reservations
+        run: >-
+          node .github/scripts/windows-legacy-bridge-reservation.mjs assert-transaction
+          --transaction "$RUNNER_TEMP/release-transaction.json"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
 
       - name: Atomically claim the durable release transaction owner
         id: claim
@@ -638,20 +664,33 @@ jobs:
           --output-dir "$env:RUNNER_TEMP/windows-final/artifacts"
 
       - name: Freeze explicit Windows candidate manifest
-        run: >-
-          pnpm run release:candidate:ci --
-          --platform windows-x64
-          --version "${{ needs.prepare.outputs.version }}"
-          --variant "${{ needs.prepare.outputs.variant }}"
-          --head-sha "${{ needs.prepare.outputs.head_sha }}"
-          --transaction-id "${{ needs.prepare.outputs.transaction_id }}"
-          --release-infra-sha "${{ needs.prepare.outputs.release_infra_sha }}"
-          --run-id "$env:GITHUB_RUN_ID"
-          --run-attempt "$env:GITHUB_RUN_ATTEMPT"
-          --asset "windows_setup=$env:RUNNER_TEMP/windows-final/artifacts/Flowzero-${{ needs.prepare.outputs.version }}-Setup.exe"
-          --asset "windows_nupkg=$env:RUNNER_TEMP/windows-final/artifacts/${{ needs.prepare.outputs.windows_nupkg_name }}"
-          --asset "windows_releases=$env:RUNNER_TEMP/windows-final/artifacts/RELEASES"
-          --output "$env:RUNNER_TEMP/windows-final/evidence/candidate.json"
+        shell: pwsh
+        run: |
+          $bridgeArgs = @()
+          if ('${{ needs.prepare.outputs.windows_legacy_bridge_required }}' -eq 'true') {
+            $bridgeArgs += @(
+              '--windows-legacy-bridge-hold-id', '${{ needs.prepare.outputs.windows_legacy_bridge_hold_id }}',
+              '--windows-legacy-bridge-tag', '${{ needs.prepare.outputs.windows_legacy_bridge_tag }}'
+            )
+            $affectedVersions = '${{ needs.prepare.outputs.windows_legacy_bridge_affected_versions_json }}' | ConvertFrom-Json
+            foreach ($affectedVersion in $affectedVersions) {
+              $bridgeArgs += @('--windows-legacy-bridge-affected-version', $affectedVersion)
+            }
+          }
+          pnpm run release:candidate:ci -- `
+            --platform windows-x64 `
+            --version '${{ needs.prepare.outputs.version }}' `
+            --variant '${{ needs.prepare.outputs.variant }}' `
+            --head-sha '${{ needs.prepare.outputs.head_sha }}' `
+            --transaction-id '${{ needs.prepare.outputs.transaction_id }}' `
+            --release-infra-sha '${{ needs.prepare.outputs.release_infra_sha }}' `
+            --run-id "$env:GITHUB_RUN_ID" `
+            --run-attempt "$env:GITHUB_RUN_ATTEMPT" `
+            --asset "windows_setup=$env:RUNNER_TEMP/windows-final/artifacts/Flowzero-${{ needs.prepare.outputs.version }}-Setup.exe" `
+            --asset "windows_nupkg=$env:RUNNER_TEMP/windows-final/artifacts/${{ needs.prepare.outputs.windows_nupkg_name }}" `
+            --asset "windows_releases=$env:RUNNER_TEMP/windows-final/artifacts/RELEASES" `
+            @bridgeArgs `
+            --output "$env:RUNNER_TEMP/windows-final/evidence/candidate.json"
 
       - name: Upload immutable final Windows candidate
         id: upload
@@ -678,6 +717,13 @@ jobs:
           token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
           ref: ${{ needs.prepare.outputs.head_sha }}
           lfs: false
+          persist-credentials: false
+
+      - name: Checkout frozen release infrastructure for compatibility evidence
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_infra_sha }}
+          path: release-infra
           persist-credentials: false
 
       - name: Setup pnpm
@@ -710,12 +756,52 @@ jobs:
           --subject-file "$env:RUNNER_TEMP/windows-final/artifacts/Flowzero-${{ needs.prepare.outputs.version }}-Setup.exe"
           --output "$env:RUNNER_TEMP/windows-verification/verification.json"
 
+      - name: Read back the exact held bridge and immutable assets
+        if: needs.prepare.outputs.windows_legacy_bridge_required == 'true'
+        shell: pwsh
+        run: >-
+          node release-infra/.github/scripts/materialize-windows-legacy-bridge.mjs
+          --target-candidate "$env:RUNNER_TEMP/windows-final/evidence/candidate.json"
+          --output-dir "$env:RUNNER_TEMP/trusted-windows-legacy-bridge"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+
+      - name: Prove the exact old to bridge to target journey
+        if: needs.prepare.outputs.windows_legacy_bridge_required == 'true'
+        shell: pwsh
+        run: |
+          node -e "const s=require('./package.json').scripts;if(!s?.['release:verify:windows-legacy-bridge:ci'])throw new Error('missing canonical two-hop bridge verifier')"
+          pnpm run release:verify:windows-legacy-bridge:ci -- `
+            --mode two-hop `
+            --target-candidate "$env:RUNNER_TEMP/windows-final/evidence/candidate.json" `
+            --target-asset-root "$env:RUNNER_TEMP/windows-final/artifacts" `
+            --bridge-hold "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/hold.json" `
+            --bridge-candidate "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/candidate.json" `
+            --bridge-asset-root "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/assets" `
+            --output "$env:RUNNER_TEMP/windows-verification/two-hop-acceptance.json"
+
+      - name: Build the content-addressed compatibility binding
+        if: needs.prepare.outputs.windows_legacy_bridge_required == 'true'
+        shell: pwsh
+        run: |
+          node release-infra/.github/scripts/windows-legacy-bridge-contract.mjs build-binding `
+            --hold "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/hold.json" `
+            --target-candidate "$env:RUNNER_TEMP/windows-final/evidence/candidate.json" `
+            --acceptance "$env:RUNNER_TEMP/windows-verification/two-hop-acceptance.json" `
+            --output "$env:RUNNER_TEMP/windows-verification/compatibility-binding.json"
+          Copy-Item `
+            "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/hold.json" `
+            "$env:RUNNER_TEMP/windows-verification/bridge-hold.json"
+
       - name: Upload Windows acceptance receipt
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: windows-verification-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/windows-verification/verification.json
+          path: ${{ runner.temp }}/windows-verification
           if-no-files-found: error
           retention-days: 30
 
@@ -851,6 +937,22 @@ jobs:
           artifact-ids: ${{ needs.accept-windows.outputs.verification_artifact_id }}
           path: ${{ runner.temp }}/windows-verification
 
+      - name: Fail closed on a declared Windows legacy bridge requirement
+        run: |
+          set -euo pipefail
+          bridge_args=()
+          if [[ -f "$RUNNER_TEMP/windows-verification/compatibility-binding.json" || -f "$RUNNER_TEMP/windows-verification/bridge-hold.json" ]]; then
+            test -f "$RUNNER_TEMP/windows-verification/compatibility-binding.json"
+            test -f "$RUNNER_TEMP/windows-verification/bridge-hold.json"
+            bridge_args+=(
+              --binding "$RUNNER_TEMP/windows-verification/compatibility-binding.json"
+              --hold "$RUNNER_TEMP/windows-verification/bridge-hold.json"
+            )
+          fi
+          node .github/scripts/validate-windows-legacy-bridge-promotion.mjs \
+            --candidate "$RUNNER_TEMP/windows-final/evidence/candidate.json" \
+            "${bridge_args[@]}"
+
       - name: Freeze Windows build checkpoint
         run: >-
           node .github/scripts/release-platform-checkpoint.mjs
@@ -901,20 +1003,37 @@ jobs:
           ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
 
       - name: Freeze Windows mirrored checkpoint
-        run: >-
-          node .github/scripts/release-platform-checkpoint.mjs
-          --phase mirrored
-          --candidate "$RUNNER_TEMP/windows-final/evidence/candidate.json"
-          --parent "$RUNNER_TEMP/windows-state/platform-verified.json"
-          --verification "$RUNNER_TEMP/windows-verification/verification.json"
-          --mirror-receipt "$RUNNER_TEMP/windows-state/mirror-receipt.json"
-          --output "$RUNNER_TEMP/windows-state/mirrored.json"
+        run: |
+          set -euo pipefail
+          bridge_args=()
+          if [[ -f "$RUNNER_TEMP/windows-verification/compatibility-binding.json" ]]; then
+            bridge_args+=(
+              --legacy-bridge-binding "$RUNNER_TEMP/windows-verification/compatibility-binding.json"
+              --legacy-bridge-hold "$RUNNER_TEMP/windows-verification/bridge-hold.json"
+            )
+          fi
+          node .github/scripts/release-platform-checkpoint.mjs \
+            --phase mirrored \
+            --candidate "$RUNNER_TEMP/windows-final/evidence/candidate.json" \
+            --parent "$RUNNER_TEMP/windows-state/platform-verified.json" \
+            --verification "$RUNNER_TEMP/windows-verification/verification.json" \
+            --mirror-receipt "$RUNNER_TEMP/windows-state/mirror-receipt.json" \
+            "${bridge_args[@]}" \
+            --output "$RUNNER_TEMP/windows-state/mirrored.json"
 
       - name: Generate Windows platform snapshot
         run: >-
           node .github/scripts/generate-platform-channel-manifest.mjs
           --checkpoint "$RUNNER_TEMP/windows-state/mirrored.json"
           --output "$RUNNER_TEMP/windows-state/platform-manifest.json"
+
+      - name: Preserve validated Windows legacy bridge evidence when required
+        run: |
+          set -euo pipefail
+          if [[ -f "$RUNNER_TEMP/windows-verification/compatibility-binding.json" ]]; then
+            cp "$RUNNER_TEMP/windows-verification/compatibility-binding.json" "$RUNNER_TEMP/windows-state/compatibility-binding.json"
+            cp "$RUNNER_TEMP/windows-verification/bridge-hold.json" "$RUNNER_TEMP/windows-state/bridge-hold.json"
+          fi
 
       - name: Upload durable Windows state checkpoint
         id: upload
@@ -1000,6 +1119,8 @@ jobs:
           mirrored-checkpoint: ${{ runner.temp }}/windows-state/mirrored.json
           allow-downgrade: 'false'
           output-receipt: ${{ runner.temp }}/windows-promotion.json
+          compatibility-binding: ${{ runner.temp }}/windows-state/compatibility-binding.json
+          bridge-hold: ${{ runner.temp }}/windows-state/bridge-hold.json
         env:
           GITHUB_TOKEN: ${{ github.token }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}

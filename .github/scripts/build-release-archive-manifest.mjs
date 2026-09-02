@@ -9,6 +9,10 @@ import {
   validateCandidateEnvelope,
   validateVerificationReceipt,
 } from './release-platform-checkpoint.mjs';
+import {
+  validateLegacyBridgeCompatibilityBinding,
+  validateLegacyBridgeHold,
+} from './windows-legacy-bridge-contract.mjs';
 
 export const SCHEMA = 'flowzero.release_archive_manifest.v1';
 
@@ -26,7 +30,19 @@ export function buildReleaseArchiveManifest({ transaction, entries }) {
     const platform = candidate.candidate.platform;
     assert(!byPlatform.has(platform), `duplicate archive platform: ${platform}`);
     assert(candidate.candidate.transaction_id === transaction.transaction_id, 'archive candidate transaction mismatch');
-    byPlatform.set(platform, { candidate, verification });
+    let windowsLegacyBridge = null;
+    if (candidate.candidate.update?.windows_legacy_bridge !== undefined) {
+      assert(entry.windowsLegacyBridge, 'archive Windows bridge evidence is missing');
+      const hold = validateLegacyBridgeHold(entry.windowsLegacyBridge.hold);
+      const binding = validateLegacyBridgeCompatibilityBinding(entry.windowsLegacyBridge.binding, {
+        hold,
+        targetCandidate: candidate,
+      });
+      windowsLegacyBridge = { binding, hold };
+    } else {
+      assert(entry.windowsLegacyBridge === undefined, 'archive contains unexpected Windows bridge evidence');
+    }
+    byPlatform.set(platform, { candidate, verification, windowsLegacyBridge });
   }
   const requested = transaction.intent.requested_platforms;
   assert(
@@ -44,6 +60,7 @@ export function buildReleaseArchiveManifest({ transaction, entries }) {
         platform,
         candidate: entry.candidate,
         verification: entry.verification,
+        ...(entry.windowsLegacyBridge ? { windows_legacy_bridge: entry.windowsLegacyBridge } : {}),
       };
     }),
   };
@@ -73,6 +90,16 @@ export function validateReleaseArchiveManifest(manifest) {
     assert(canonicalJson(candidate.candidate.source) === canonicalJson(archive.source), 'release archive candidate source mismatch');
     assert(canonicalJson(candidate.candidate.release) === canonicalJson(archive.release), 'release archive candidate release mismatch');
     validateVerificationReceipt(entry.verification, candidate);
+    if (candidate.candidate.update?.windows_legacy_bridge !== undefined) {
+      assert(entry.windows_legacy_bridge, 'release archive Windows bridge evidence is missing');
+      const hold = validateLegacyBridgeHold(entry.windows_legacy_bridge.hold);
+      validateLegacyBridgeCompatibilityBinding(entry.windows_legacy_bridge.binding, {
+        hold,
+        targetCandidate: candidate,
+      });
+    } else {
+      assert(entry.windows_legacy_bridge === undefined, 'release archive contains unexpected Windows bridge evidence');
+    }
   }
   return JSON.parse(JSON.stringify(manifest));
 }

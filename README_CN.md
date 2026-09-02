@@ -83,6 +83,8 @@ shasum -a 256 Flowzero-*.zip
 
 `Beta` 版本会以 GitHub Pre-release 形式发布。
 
+Windows 兼容桥接包使用独立的资格验证/暂停通道。桥接包与其计划中的完整目标包必须来自同一个私有源码精确 SHA，且该源码的桌面包版本必须等于目标版本；较小的桥接版本是专用 bridge builder 的输出，不允许来自第二份源码 checkout。在为两个版本写入任何不可变 tag reservation 之前，hold 工作流必须先 checkout 该精确 SHA、验证 package 版本并证明它属于私有 `main`，因此错误输入不会永久占用版本。桥接 hold 以内容寻址方式写入 `channels/<channel>/platforms/windows-x64/legacy-bridges/<tag>/`；hold 工作流必须证明普通 `current.json` 在动作前后字节完全不变。源码 SHA 会贯穿 candidate、hold、持久 tag reservation、目标读回和最终 binding；即使目标版本相同，源码 SHA 不同也必须 fail-closed。hold 不是已发布版本：它没有 promotion、canary 或 GitHub archive 出口。后续 Windows 正式目标若声明需要桥接，必须先验证精确不可变 hold 和 old → bridge → target 两跳验收 binding，才能对 `current.json` 执行唯一一次平台 pointer CAS。
+
 `Initialize Empty Platform Channel` 只用于从未存在 pointer 或 published snapshot 的平台。已有平台在获准撤回后清空，必须走 `Withdraw Platform Channel`：当前 tag 必须已经 tombstone，并通过 ETag CAS 切到 `no_release`。
 
 撤回标签是[版本撤回 tombstone 权威表](.github/release-tombstones.json)中的
