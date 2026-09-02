@@ -101,8 +101,16 @@ test('hold workflow delegates build and verification to exactly the canonical so
   const preflight = jobBlock(holdWorkflow, 'powershell-signing-evidence-preflight');
   assert.match(preflight, /runs-on: windows-2025/u);
   assert.match(preflight, /before any immutable reservation/u);
+  assert.match(preflight, /repository: daymade\/flowzero/u);
+  assert.match(
+    preflight,
+    /ref: \$\{\{ github\.event\.client_payload\.intent\.source\.head_sha \|\| inputs\.head_sha \}\}/u,
+  );
   assert.match(preflight, /--mode powershell-signing-probe/u);
-  assert.doesNotMatch(preflight, /reserve-intent|WINDOWS_CERT_PFX|WINDOWS_CERT_PASSWORD/u);
+  assert.doesNotMatch(
+    preflight,
+    /reserve-intent|WINDOWS_CERT_PFX|WINDOWS_CERT_PASSWORD|continue-on-error|^\s+if:/mu,
+  );
   assert.match(holdWorkflow, /missing canonical bridge build script/u);
   assert.match(holdWorkflow, /missing canonical bridge verification script/u);
   assert.match(holdWorkflow, /validate-candidate/u);
