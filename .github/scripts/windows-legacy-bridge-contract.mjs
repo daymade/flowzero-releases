@@ -693,8 +693,8 @@ export function buildLegacyBridgeCompatibilityBinding({
     }
     const preservation = route.user_data_preservation;
     assert(
-      preservation?.schema === 'flowzero.windows_update_user_data_preservation.v2'
-        && preservation.scope === 'isolated_production_profile'
+      preservation?.schema === 'flowzero.windows_update_user_data_preservation.v3'
+        && preservation.scope === 'isolated_verification_profile'
         && preservation.seeded_before_first_hop === true
         && preservation.source_version === version
         && preservation.source_schema_commit
@@ -710,7 +710,8 @@ export function buildLegacyBridgeCompatibilityBinding({
         && /^[a-f0-9]{64}$/u.test(preservation.transcription_text_sha256 || '')
         && /^[a-f0-9]{64}$/u.test(preservation.recording_before_sha256 || '')
         && preservation.recording_after_sha256 === preservation.recording_before_sha256
-        && preservation.production_runtime_profile === true
+        && preservation.runtime_profile === 'verification'
+        && preservation.verification_profile_isolated_from_production === true
         && preservation.database_migrated === true
         && preservation.transcription_preserved === true
         && preservation.settings_preserved === true

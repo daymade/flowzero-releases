@@ -260,8 +260,8 @@ function acceptance(
     routes: [{
       from_version: '0.1.2-beta.7',
       user_data_preservation: {
-        schema: 'flowzero.windows_update_user_data_preservation.v2',
-        scope: 'isolated_production_profile',
+        schema: 'flowzero.windows_update_user_data_preservation.v3',
+        scope: 'isolated_verification_profile',
         seeded_before_first_hop: true,
         source_version: '0.1.2-beta.7',
         source_schema_commit: '2a8dfdbf97c7ce62adde5ec5e1557543d3537d87',
@@ -274,7 +274,8 @@ function acceptance(
         transcription_text_sha256: digest('4'),
         recording_before_sha256: digest('5'),
         recording_after_sha256: digest('5'),
-        production_runtime_profile: true,
+        runtime_profile: 'verification',
+        verification_profile_isolated_from_production: true,
         database_migrated: true,
         transcription_preserved: true,
         settings_preserved: true,
