@@ -33,6 +33,10 @@ const reverifyMacBusinessWorkflow = await readFile(
   new URL('../workflows/reverify-macos-business.yml', import.meta.url),
   'utf8',
 );
+const reverifyWindowsBusinessWorkflow = await readFile(
+  new URL('../workflows/reverify-windows-business.yml', import.meta.url),
+  'utf8',
+);
 const operatorWorkflows = await Promise.all([
   'mirror-published-release.yml',
   'resume-platform-mirror.yml',
@@ -393,6 +397,20 @@ test('a failed mirror resumes from exact accepted artifacts without rebuilding',
   assert.match(resumeMirrorWorkflow, /live-stepfun-timeline\.json/u);
   assert.match(resumeMirrorWorkflow, /--phase build_created/u);
   assert.match(resumeMirrorWorkflow, /--phase platform_verified/u);
+  const recoveredBridgeGate = resumeMirrorWorkflow.indexOf(
+    '      - name: Fail closed on recovered Windows legacy bridge evidence',
+  );
+  const recoveredMirrorWrite = resumeMirrorWorkflow.indexOf(
+    '      - name: Resume exact immutable mirror writes',
+  );
+  assert.ok(recoveredBridgeGate >= 0 && recoveredBridgeGate < recoveredMirrorWrite);
+  const recoveredBridgeStep = resumeMirrorWorkflow.slice(
+    recoveredBridgeGate,
+    recoveredMirrorWrite,
+  );
+  assert.match(recoveredBridgeStep, /validate-windows-legacy-bridge-promotion\.mjs/u);
+  assert.match(recoveredBridgeStep, /compatibility-binding\.json/u);
+  assert.match(recoveredBridgeStep, /bridge-hold\.json/u);
   assert.match(resumeMirrorWorkflow, /uses: \.\/\.github\/actions\/mirror-release-assets/u);
   assert.match(resumeMirrorWorkflow, /--phase mirrored/u);
   assert.match(resumeMirrorWorkflow, /uses: \.\/\.github\/actions\/promote-update-channel/u);
@@ -457,6 +475,30 @@ test('a verifier-only macOS correction reuses one immutable candidate and emits 
   assert.match(reverifyMacBusinessWorkflow, /release-platform-checkpoint\.mjs \\\n+\s+--phase platform_verified[\s\S]*--verification "\$RUNNER_TEMP\/fixture-verification\/verification\.json"[\s\S]*--verification "\$RUNNER_TEMP\/reverified\/live-stepfun-timeline\.json"/u);
   assert.match(reverifyMacBusinessWorkflow, /macos-business-reverification-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u);
   assert.doesNotMatch(reverifyMacBusinessWorkflow, /release:build:ci|release:notarize:ci|forge:/u);
+});
+
+test('a verifier-only Windows correction reuses one immutable candidate and emits complete bridge evidence', () => {
+  const uses = [...reverifyWindowsBusinessWorkflow.matchAll(/^\s+uses:\s+([^\s#]+)/gmu)]
+    .map((match) => match[1]);
+  assert.ok(uses.length > 0);
+  for (const value of uses) {
+    assert.match(value, /^[^@]+@[a-f0-9]{40}$/u, `un-pinned Windows reverify action: ${value}`);
+  }
+  assert.match(reverifyWindowsBusinessWorkflow, /runs-on: windows-2025/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /current private main/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /git merge-base --is-ancestor/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /verifier-only recovery changed product or unrelated file/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /artifact-ids: \$\{\{ inputs\.candidate_artifact_id \}\}/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /run-id: \$\{\{ inputs\.source_run_id \}\}/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /--suite windows-installer/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /--verifier-head-sha "\$\{\{ inputs\.verifier_source_sha \}\}"/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /windows_signing_policy == 'authenticode'/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /materialize-windows-legacy-bridge\.mjs/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /--mode two-hop/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /windows-legacy-bridge-contract\.mjs build-binding/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /validate-windows-legacy-bridge-promotion\.mjs/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /windows-business-reverification-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u);
+  assert.doesNotMatch(reverifyWindowsBusinessWorkflow, /release:build:ci|electron-forge|forge:make|preforge:bundle/u);
 });
 
 test('GitHub archive is a presentation layer and does not gate platform promotion', () => {

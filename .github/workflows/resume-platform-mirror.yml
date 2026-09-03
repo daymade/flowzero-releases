@@ -201,6 +201,24 @@ jobs:
         env:
           CANDIDATE_PATH: ${{ runner.temp }}/platform-final/evidence/candidate.json
 
+      - name: Fail closed on recovered Windows legacy bridge evidence
+        if: inputs.platform == 'windows-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bridge_args=()
+          if [[ -f "$RUNNER_TEMP/platform-verification/compatibility-binding.json" || -f "$RUNNER_TEMP/platform-verification/bridge-hold.json" ]]; then
+            test -f "$RUNNER_TEMP/platform-verification/compatibility-binding.json"
+            test -f "$RUNNER_TEMP/platform-verification/bridge-hold.json"
+            bridge_args+=(
+              --binding "$RUNNER_TEMP/platform-verification/compatibility-binding.json"
+              --hold "$RUNNER_TEMP/platform-verification/bridge-hold.json"
+            )
+          fi
+          node .github/scripts/validate-windows-legacy-bridge-promotion.mjs \
+            --candidate "$RUNNER_TEMP/platform-final/evidence/candidate.json" \
+            "${bridge_args[@]}"
+
       - name: Reject an unapproved downgrade before immutable mirror writes
         run: >-
           node .github/scripts/assert-platform-release-forward.mjs
