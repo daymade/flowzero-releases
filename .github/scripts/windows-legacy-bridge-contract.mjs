@@ -601,7 +601,12 @@ function assertAcyclic(routes) {
   for (const node of graph.keys()) visit(node);
 }
 
-export function buildLegacyBridgeCompatibilityBinding({ hold: rawHold, targetCandidate, acceptance }) {
+export function buildLegacyBridgeCompatibilityBinding({
+  hold: rawHold,
+  targetCandidate,
+  acceptance,
+  expectedVerifierSourceSha = null,
+}) {
   const hold = validateLegacyBridgeHold(rawHold);
   const target = targetCandidate?.candidate;
   assert(targetCandidate?.schema === 'flowzero.release_platform_candidate.v1', 'target candidate schema is unsupported');
@@ -639,7 +644,22 @@ export function buildLegacyBridgeCompatibilityBinding({ hold: rawHold, targetCan
   assert(acceptance.platform === 'windows-x64', 'two-hop acceptance platform is invalid');
   assert(acceptance.bridge_candidate_id === hold.hold.candidate_id, 'two-hop acceptance bridge mismatch');
   assert(acceptance.target_candidate_id === targetCandidate.candidate_id, 'two-hop acceptance target mismatch');
-  assert(acceptance.verifier_head_sha === target.source.head_sha, 'two-hop acceptance verifier SHA mismatch');
+  assert(/^[a-f0-9]{40}$/u.test(acceptance.verifier_head_sha || ''), 'two-hop acceptance verifier SHA is invalid');
+  assert(
+    acceptance.evidence?.target_source_sha === target.source.head_sha,
+    'two-hop acceptance target source SHA mismatch',
+  );
+  assert(
+    acceptance.evidence?.bridge_hold_id === hold.hold_id,
+    'two-hop acceptance bridge hold ID mismatch',
+  );
+  if (expectedVerifierSourceSha !== null) {
+    assert(/^[a-f0-9]{40}$/u.test(expectedVerifierSourceSha), 'expected two-hop verifier SHA is invalid');
+    assert(
+      acceptance.verifier_head_sha === expectedVerifierSourceSha,
+      'two-hop acceptance verifier SHA mismatch',
+    );
+  }
   assert(acceptance.current_pointer_writes === 0, 'two-hop acceptance must not write current.json');
   assert(!Number.isNaN(Date.parse(acceptance.accepted_at)), 'two-hop acceptance timestamp is invalid');
   const affectedVersions = canonicalVersions(acceptance.affected_versions, { before: hold.hold.bridge.version });
@@ -822,11 +842,12 @@ export async function main(argv = process.argv.slice(2)) {
     return result;
   }
   if (command === 'build-binding') {
-    for (const key of ['--hold', '--target-candidate', '--acceptance', '--output']) assert(values[key], `missing argument: ${key}`);
+    for (const key of ['--hold', '--target-candidate', '--acceptance', '--verifier-source-sha', '--output']) assert(values[key], `missing argument: ${key}`);
     const result = buildLegacyBridgeCompatibilityBinding({
       hold: JSON.parse(await readFile(path.resolve(values['--hold']), 'utf8')),
       targetCandidate: JSON.parse(await readFile(path.resolve(values['--target-candidate']), 'utf8')),
       acceptance: JSON.parse(await readFile(path.resolve(values['--acceptance']), 'utf8')),
+      expectedVerifierSourceSha: values['--verifier-source-sha'],
     });
     await atomicWriteJson(values['--output'], result);
     process.stdout.write(`${result.binding_id}\n`);

@@ -502,6 +502,9 @@ test('a verifier-only Windows correction reuses one immutable candidate and emit
   assert.match(reverifyWindowsBusinessWorkflow, /windows_signing_policy == 'authenticode'/u);
   assert.match(reverifyWindowsBusinessWorkflow, /materialize-windows-legacy-bridge\.mjs/u);
   assert.match(reverifyWindowsBusinessWorkflow, /--mode two-hop/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /--candidate-source-sha "\$\{\{ inputs\.candidate_source_sha \}\}"/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /--verifier-source-sha "\$\{\{ inputs\.verifier_source_sha \}\}"/u);
+  assert.match(reverifyWindowsBusinessWorkflow, /\.release-toolkit\/\.github\/scripts\/windows-legacy-bridge-contract\.mjs build-binding/u);
   assert.match(reverifyWindowsBusinessWorkflow, /windows-legacy-bridge-contract\.mjs build-binding/u);
   assert.match(reverifyWindowsBusinessWorkflow, /validate-windows-legacy-bridge-promotion\.mjs/u);
   assert.match(reverifyWindowsBusinessWorkflow, /windows-business-reverification-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u);
