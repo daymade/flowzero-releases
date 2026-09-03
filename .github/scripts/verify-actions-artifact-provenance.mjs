@@ -70,16 +70,21 @@ export function validateActionsArtifactProvenance({
 
   const separateVerificationRun = String(verificationRunId) !== String(sourceRunId);
   if (separateVerificationRun) {
-    assert(platform === 'macos-arm64', 'Windows verification must come from its original release run');
-    assert(verificationRun.path === '.github/workflows/reverify-macos-business.yml', 'verification workflow path is untrusted');
+    const trustedReverification = platform === 'macos-arm64'
+      ? {
+          workflowPath: '.github/workflows/reverify-macos-business.yml',
+          artifactName: `macos-business-reverification-${verificationRunId}-${verificationRun.run_attempt}`,
+        }
+      : {
+          workflowPath: '.github/workflows/reverify-windows-business.yml',
+          artifactName: `windows-business-reverification-${verificationRunId}-${verificationRun.run_attempt}`,
+        };
+    assert(verificationRun.path === trustedReverification.workflowPath, 'verification workflow path is untrusted');
     assert(verificationRun.event === 'workflow_dispatch', 'verification workflow event is untrusted');
     assert(verificationRun.head_branch === 'main', 'verification workflow branch is untrusted');
     assert(verificationRun.head_sha === toolkitSha, 'verification workflow toolkit SHA mismatch');
     assert(verificationRun.conclusion === 'success', 'verification workflow did not succeed');
-    assert(
-      verificationArtifact.name === `macos-business-reverification-${verificationRunId}-${verificationRun.run_attempt}`,
-      'verification artifact name does not bind the exact run attempt',
-    );
+    assert(verificationArtifact.name === trustedReverification.artifactName, 'verification artifact name does not bind the exact run attempt');
   } else {
     assert(verificationRun.path === '.github/workflows/release.yml', 'source verification workflow path is untrusted');
     const verificationNamePattern = platform === 'macos-arm64'

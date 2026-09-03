@@ -1,0 +1,298 @@
+name: Reverify Windows Business Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Original release run containing the immutable Windows candidate
+        required: true
+        type: string
+      candidate_artifact_id:
+        description: Exact final Windows candidate artifact ID
+        required: true
+        type: string
+      candidate_source_sha:
+        description: Exact private source SHA embedded in the candidate
+        required: true
+        type: string
+      verifier_source_sha:
+        description: Exact private main SHA containing verifier-only corrections
+        required: true
+        type: string
+      version:
+        description: Candidate version without v prefix
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  reverify:
+    runs-on: windows-2025
+    timeout-minutes: 180
+    environment: beta-release
+    outputs:
+      verification_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Validate immutable Windows candidate and verifier identities
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -ne 'refs/heads/main' `
+            -or $env:SOURCE_RUN_ID -notmatch '^\d+$' `
+            -or $env:CANDIDATE_ARTIFACT_ID -notmatch '^\d+$' `
+            -or $env:CANDIDATE_SHA -notmatch '^[a-f0-9]{40}$' `
+            -or $env:VERIFIER_SHA -notmatch '^[a-f0-9]{40}$' `
+            -or $env:VERSION -notmatch '^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-beta\.(?:0|[1-9]\d*)$') {
+            throw 'invalid Windows reverification identity'
+          }
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
+          CANDIDATE_SHA: ${{ inputs.candidate_source_sha }}
+          VERIFIER_SHA: ${{ inputs.verifier_source_sha }}
+          VERSION: ${{ inputs.version }}
+
+      - name: Checkout exact verifier source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ inputs.verifier_source_sha }}
+          fetch-depth: 0
+          lfs: false
+          persist-credentials: false
+
+      - name: Prove verifier is current private main and changes no product runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $currentMain = gh api repos/daymade/flowzero/commits/main --jq .sha
+          if ($LASTEXITCODE -ne 0 -or $currentMain -ne '${{ inputs.verifier_source_sha }}') {
+            throw 'Windows verifier is not current private main'
+          }
+          git merge-base --is-ancestor '${{ inputs.candidate_source_sha }}' '${{ inputs.verifier_source_sha }}'
+          if ($LASTEXITCODE -ne 0) { throw 'candidate source is not an ancestor of the verifier' }
+          $changed = @(git diff --name-only '${{ inputs.candidate_source_sha }}' '${{ inputs.verifier_source_sha }}')
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -eq 0) { throw 'Windows verifier diff is empty or unreadable' }
+          $allowed = @(
+            'scripts/release-verify-ci.cjs',
+            'scripts/build-windows-update-bridge.cjs',
+            'scripts/run-squirrel-legacy-upgrade-smoke-windows.cjs',
+            'apps/desktop/src/helpers/__tests__/releaseIntent.test.js',
+            'apps/desktop/src/test/lint/windows-squirrel-legacy-bridge-contract.test.js'
+          )
+          foreach ($path in $changed) {
+            if ($path -notin $allowed) { throw "verifier-only recovery changed product or unrelated file: $path" }
+          }
+        env:
+          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+
+      - name: Checkout trusted current public recovery toolkit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero-releases
+          ref: ${{ github.sha }}
+          path: .release-toolkit
+          fetch-depth: 1
+          lfs: false
+          persist-credentials: false
+
+      - name: Prove candidate artifact belongs to the original release run
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifact = gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts/${{ inputs.candidate_artifact_id }}" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 `
+            -or [string]$artifact.id -ne '${{ inputs.candidate_artifact_id }}' `
+            -or [string]$artifact.workflow_run.id -ne '${{ inputs.source_run_id }}' `
+            -or $artifact.expired -ne $false `
+            -or [string]$artifact.name -notmatch '^windows-final-') {
+            throw 'Windows candidate artifact provenance is invalid'
+          }
+          $sourceRun = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/${{ inputs.source_run_id }}" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 `
+            -or [string]$sourceRun.id -ne '${{ inputs.source_run_id }}' `
+            -or $sourceRun.path -ne '.github/workflows/release.yml' `
+            -or $sourceRun.event -ne 'repository_dispatch' `
+            -or $sourceRun.head_branch -ne 'main' `
+            -or $sourceRun.status -ne 'completed') {
+            throw 'Windows candidate source workflow provenance is invalid'
+          }
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install exact verifier dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          SKIP_INSTALL_CONFIRM: '1'
+
+      - name: Download exact immutable Windows candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ inputs.candidate_artifact_id }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/windows-final
+
+      - name: Validate candidate identity and freeze build checkpoint
+        id: candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidatePath = "$env:RUNNER_TEMP/windows-final/evidence/candidate.json"
+          $transactionPath = "$env:RUNNER_TEMP/windows-final/evidence/release-transaction.json"
+          node .release-toolkit/.github/scripts/release-platform-checkpoint.mjs `
+            --phase build_created `
+            --candidate $candidatePath `
+            --transaction $transactionPath `
+            --output "$env:RUNNER_TEMP/windows-reverify-state/build-created.json"
+          node -e @'
+          const fs = require('node:fs');
+          const candidate = JSON.parse(fs.readFileSync(process.env.CANDIDATE_PATH, 'utf8')).candidate;
+          if (candidate.platform !== 'windows-x64'
+            || candidate.release?.version !== process.env.VERSION
+            || candidate.source?.head_sha !== process.env.CANDIDATE_SHA
+            || String(candidate.attempt?.workflow_run_id) !== process.env.SOURCE_RUN_ID
+            || !/^[a-f0-9]{40}$/.test(candidate.attempt?.release_infrastructure_sha || '')) {
+            throw new Error('Windows candidate identity does not match reverification inputs');
+          }
+          const policy = candidate.update?.windows_signing_policy;
+          if (!['unsigned', 'authenticode'].includes(policy)) throw new Error('Windows candidate signing policy is invalid');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, [
+            `release_infra_sha=${candidate.attempt.release_infrastructure_sha}`,
+            `windows_signing_policy=${policy}`,
+            `legacy_bridge_required=${candidate.update?.windows_legacy_bridge ? 'true' : 'false'}`,
+            '',
+          ].join('\n'));
+          '@
+          $sourceRun = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/${{ inputs.source_run_id }}" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $sourceRun.head_sha -ne (Get-Content $candidatePath | ConvertFrom-Json).candidate.attempt.release_infrastructure_sha) {
+            throw 'Windows candidate infrastructure SHA disagrees with its source run'
+          }
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_PATH: ${{ runner.temp }}/windows-final/evidence/candidate.json
+          VERSION: ${{ inputs.version }}
+          CANDIDATE_SHA: ${{ inputs.candidate_source_sha }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+
+      - name: Checkout original frozen release infrastructure for compatibility evidence
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero-releases
+          ref: ${{ steps.candidate.outputs.release_infra_sha }}
+          path: .release-infra-original
+          persist-credentials: false
+
+      - name: Materialize the configured Windows certificate for Authenticode verification
+        if: steps.candidate.outputs.windows_signing_policy == 'authenticode'
+        shell: pwsh
+        run: node -e "require('node:fs').writeFileSync(process.env.WINDOWS_CERT_FILE,Buffer.from(process.env.WINDOWS_CERT_PFX,'base64'))"
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_FILE: ${{ runner.temp }}\flowzero-verification-signing.pfx
+
+      - name: Reverify signing policy and installed app without rebuilding
+        run: >-
+          pnpm run release:verify:ci --
+          --suite windows-installer
+          --version "${{ inputs.version }}"
+          --head-sha "${{ inputs.candidate_source_sha }}"
+          --verifier-head-sha "${{ inputs.verifier_source_sha }}"
+          --candidate-manifest "$env:RUNNER_TEMP/windows-final/evidence/candidate.json"
+          --release-dir "$env:RUNNER_TEMP/windows-final/artifacts"
+          --subject-file "$env:RUNNER_TEMP/windows-final/artifacts/Flowzero-${{ inputs.version }}-Setup.exe"
+          --output "$env:RUNNER_TEMP/windows-verification/verification.json"
+        env:
+          WINDOWS_CERT_FILE: ${{ steps.candidate.outputs.windows_signing_policy == 'authenticode' && format('{0}\flowzero-verification-signing.pfx', runner.temp) || '' }}
+          WINDOWS_CERT_PASSWORD: ${{ steps.candidate.outputs.windows_signing_policy == 'authenticode' && secrets.WINDOWS_CERT_PASSWORD || '' }}
+
+      - name: Remove the materialized Windows verification certificate
+        if: ${{ always() && steps.candidate.outputs.windows_signing_policy == 'authenticode' }}
+        shell: pwsh
+        run: Remove-Item -LiteralPath "$env:RUNNER_TEMP\flowzero-verification-signing.pfx" -Force -ErrorAction SilentlyContinue
+
+      - name: Read back the exact held bridge and immutable assets
+        if: steps.candidate.outputs.legacy_bridge_required == 'true'
+        shell: pwsh
+        run: >-
+          node .release-infra-original/.github/scripts/materialize-windows-legacy-bridge.mjs
+          --target-candidate "$env:RUNNER_TEMP/windows-final/evidence/candidate.json"
+          --output-dir "$env:RUNNER_TEMP/trusted-windows-legacy-bridge"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: flowzero-releases
+
+      - name: Prove the exact old to bridge to target journey
+        if: steps.candidate.outputs.legacy_bridge_required == 'true'
+        shell: pwsh
+        run: |
+          node -e "const s=require('./package.json').scripts;if(!s?.['release:verify:windows-legacy-bridge:ci'])throw new Error('missing canonical two-hop bridge verifier')"
+          pnpm run release:verify:windows-legacy-bridge:ci -- `
+            --mode two-hop `
+            --target-candidate "$env:RUNNER_TEMP/windows-final/evidence/candidate.json" `
+            --target-asset-root "$env:RUNNER_TEMP/windows-final/artifacts" `
+            --bridge-hold "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/hold.json" `
+            --bridge-candidate "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/candidate.json" `
+            --bridge-asset-root "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/assets" `
+            --output "$env:RUNNER_TEMP/windows-verification/two-hop-acceptance.json"
+
+      - name: Build the content-addressed compatibility binding
+        if: steps.candidate.outputs.legacy_bridge_required == 'true'
+        shell: pwsh
+        run: |
+          node .release-infra-original/.github/scripts/windows-legacy-bridge-contract.mjs build-binding `
+            --hold "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/hold.json" `
+            --target-candidate "$env:RUNNER_TEMP/windows-final/evidence/candidate.json" `
+            --acceptance "$env:RUNNER_TEMP/windows-verification/two-hop-acceptance.json" `
+            --output "$env:RUNNER_TEMP/windows-verification/compatibility-binding.json"
+          Copy-Item `
+            "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/hold.json" `
+            "$env:RUNNER_TEMP/windows-verification/bridge-hold.json"
+
+      - name: Validate accepted state and bridge evidence before upload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node .release-toolkit/.github/scripts/release-platform-checkpoint.mjs `
+            --phase platform_verified `
+            --candidate "$env:RUNNER_TEMP/windows-final/evidence/candidate.json" `
+            --transaction "$env:RUNNER_TEMP/windows-final/evidence/release-transaction.json" `
+            --parent "$env:RUNNER_TEMP/windows-reverify-state/build-created.json" `
+            --verification "$env:RUNNER_TEMP/windows-verification/verification.json" `
+            --output "$env:RUNNER_TEMP/windows-reverify-state/platform-verified.json"
+          $bridgeArgs = @()
+          if (Test-Path "$env:RUNNER_TEMP/windows-verification/compatibility-binding.json") {
+            if (-not (Test-Path "$env:RUNNER_TEMP/windows-verification/bridge-hold.json")) { throw 'bridge hold is missing' }
+            $bridgeArgs += @(
+              '--binding', "$env:RUNNER_TEMP/windows-verification/compatibility-binding.json",
+              '--hold', "$env:RUNNER_TEMP/windows-verification/bridge-hold.json"
+            )
+          } elseif (Test-Path "$env:RUNNER_TEMP/windows-verification/bridge-hold.json") {
+            throw 'bridge binding is missing'
+          }
+          node .release-toolkit/.github/scripts/validate-windows-legacy-bridge-promotion.mjs `
+            --candidate "$env:RUNNER_TEMP/windows-final/evidence/candidate.json" `
+            @bridgeArgs
+
+      - name: Upload complete Windows business reverification
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-business-reverification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-verification
+          if-no-files-found: error
+          retention-days: 30

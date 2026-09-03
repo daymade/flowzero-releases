@@ -111,6 +111,60 @@ test('accepts Windows artifacts from the original release run without macOS name
   assert.equal(result.verification.name, 'windows-verification-transaction-1');
 });
 
+test('accepts Windows verification only from the exact trusted reverification run and attempt', () => {
+  const result = validateActionsArtifactProvenance(inputs({
+    platform: 'windows-x64',
+    candidateArtifact: {
+      id: 101,
+      name: 'windows-final-transaction-1',
+      expired: false,
+      workflow_run: { id: 11 },
+    },
+    verificationArtifact: {
+      id: 202,
+      name: 'windows-business-reverification-22-3',
+      expired: false,
+      workflow_run: { id: 22 },
+    },
+    verificationRun: {
+      ...inputs().verificationRun,
+      path: '.github/workflows/reverify-windows-business.yml',
+    },
+  }));
+  assert.equal(result.verification.workflow_path, '.github/workflows/reverify-windows-business.yml');
+  assert.equal(result.verification.run_attempt, 3);
+});
+
+test('rejects cross-platform reverification workflows and Windows artifact attempt drift', () => {
+  const windows = {
+    platform: 'windows-x64',
+    candidateArtifact: {
+      id: 101,
+      name: 'windows-final-transaction-1',
+      expired: false,
+      workflow_run: { id: 11 },
+    },
+    verificationArtifact: {
+      id: 202,
+      name: 'windows-business-reverification-22-3',
+      expired: false,
+      workflow_run: { id: 22 },
+    },
+  };
+  assert.throws(() => validateActionsArtifactProvenance(inputs(windows)), /workflow path is untrusted/u);
+  assert.throws(() => validateActionsArtifactProvenance(inputs({
+    ...windows,
+    verificationArtifact: {
+      ...windows.verificationArtifact,
+      name: 'windows-business-reverification-22-2',
+    },
+    verificationRun: {
+      ...inputs().verificationRun,
+      path: '.github/workflows/reverify-windows-business.yml',
+    },
+  })), /does not bind the exact run attempt/u);
+});
+
 test('rejects macOS artifact names on a Windows recovery route', () => {
   assert.throws(
     () => validateActionsArtifactProvenance(inputs({ platform: 'windows-x64' })),
