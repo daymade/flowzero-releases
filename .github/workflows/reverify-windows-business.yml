@@ -251,16 +251,19 @@ jobs:
             --bridge-hold "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/hold.json" `
             --bridge-candidate "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/candidate.json" `
             --bridge-asset-root "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/assets" `
+            --candidate-source-sha "${{ inputs.candidate_source_sha }}" `
+            --verifier-source-sha "${{ inputs.verifier_source_sha }}" `
             --output "$env:RUNNER_TEMP/windows-verification/two-hop-acceptance.json"
 
       - name: Build the content-addressed compatibility binding
         if: steps.candidate.outputs.legacy_bridge_required == 'true'
         shell: pwsh
         run: |
-          node .release-infra-original/.github/scripts/windows-legacy-bridge-contract.mjs build-binding `
+          node .release-toolkit/.github/scripts/windows-legacy-bridge-contract.mjs build-binding `
             --hold "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/hold.json" `
             --target-candidate "$env:RUNNER_TEMP/windows-final/evidence/candidate.json" `
             --acceptance "$env:RUNNER_TEMP/windows-verification/two-hop-acceptance.json" `
+            --verifier-source-sha "${{ inputs.verifier_source_sha }}" `
             --output "$env:RUNNER_TEMP/windows-verification/compatibility-binding.json"
           Copy-Item `
             "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/hold.json" `

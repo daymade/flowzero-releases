@@ -244,7 +244,11 @@ function targetCandidate(hold = bridgeHold()) {
   };
 }
 
-function acceptance(hold = bridgeHold(), target = targetCandidate(hold)) {
+function acceptance(
+  hold = bridgeHold(),
+  target = targetCandidate(hold),
+  { verifierHeadSha = target.candidate.source.head_sha } = {},
+) {
   const receipt = {
     schema: LEGACY_BRIDGE_TWO_HOP_ACCEPTANCE_SCHEMA,
     status: 'pass',
@@ -282,7 +286,11 @@ function acceptance(hold = bridgeHold(), target = targetCandidate(hold)) {
       ],
     }],
     current_pointer_writes: 0,
-    verifier_head_sha: target.candidate.source.head_sha,
+    verifier_head_sha: verifierHeadSha,
+    evidence: {
+      target_source_sha: target.candidate.source.head_sha,
+      bridge_hold_id: hold.hold_id,
+    },
     accepted_at: '2026-09-02T01:00:00.000Z',
   };
   return { ...receipt, acceptance_id: contentId(receipt) };
@@ -510,6 +518,30 @@ test('content-addressed binding accepts only one exact acyclic old-to-bridge-to-
   assert.throws(
     () => validateLegacyBridgeCompatibilityBinding(tampered, { hold, targetCandidate: target }),
     /does not match exact hold\/target evidence/u,
+  );
+});
+
+test('binding keeps immutable candidate source distinct from an explicitly admitted verifier source', () => {
+  const hold = bridgeHold();
+  const target = targetCandidate(hold);
+  const verifierHeadSha = 'b'.repeat(40);
+  const receipt = acceptance(hold, target, { verifierHeadSha });
+  const binding = buildLegacyBridgeCompatibilityBinding({
+    hold,
+    targetCandidate: target,
+    acceptance: receipt,
+    expectedVerifierSourceSha: verifierHeadSha,
+  });
+  assert.equal(binding.binding.acceptance.verifier_head_sha, verifierHeadSha);
+  assert.equal(binding.binding.acceptance.evidence.target_source_sha, target.candidate.source.head_sha);
+  assert.throws(
+    () => buildLegacyBridgeCompatibilityBinding({
+      hold,
+      targetCandidate: target,
+      acceptance: receipt,
+      expectedVerifierSourceSha: 'c'.repeat(40),
+    }),
+    /verifier SHA mismatch/u,
   );
 });
 

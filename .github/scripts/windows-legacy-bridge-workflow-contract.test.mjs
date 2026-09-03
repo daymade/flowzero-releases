@@ -202,6 +202,8 @@ test('normal Windows release fails closed on declared compatibility and promotes
   const acceptance = jobBlock(releaseWorkflow, 'accept-windows');
   assert.match(acceptance, /materialize-windows-legacy-bridge\.mjs/u);
   assert.match(acceptance, /release:verify:windows-legacy-bridge:ci --[\s\S]*--mode two-hop/u);
+  assert.match(acceptance, /--candidate-source-sha "\$\{\{ needs\.prepare\.outputs\.head_sha \}\}"/u);
+  assert.match(acceptance, /--verifier-source-sha "\$\{\{ needs\.prepare\.outputs\.head_sha \}\}"/u);
   assert.match(acceptance, /windows-legacy-bridge-contract\.mjs build-binding/u);
   assert.equal((promoteScript.match(/putCurrentJson\(env, currentKey,/gu) || []).length, 1);
 });

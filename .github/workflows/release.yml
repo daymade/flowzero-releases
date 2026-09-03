@@ -871,6 +871,8 @@ jobs:
             --bridge-hold "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/hold.json" `
             --bridge-candidate "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/candidate.json" `
             --bridge-asset-root "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/assets" `
+            --candidate-source-sha "${{ needs.prepare.outputs.head_sha }}" `
+            --verifier-source-sha "${{ needs.prepare.outputs.head_sha }}" `
             --output "$env:RUNNER_TEMP/windows-verification/two-hop-acceptance.json"
 
       - name: Build the content-addressed compatibility binding
@@ -881,6 +883,7 @@ jobs:
             --hold "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/hold.json" `
             --target-candidate "$env:RUNNER_TEMP/windows-final/evidence/candidate.json" `
             --acceptance "$env:RUNNER_TEMP/windows-verification/two-hop-acceptance.json" `
+            --verifier-source-sha "${{ needs.prepare.outputs.head_sha }}" `
             --output "$env:RUNNER_TEMP/windows-verification/compatibility-binding.json"
           Copy-Item `
             "$env:RUNNER_TEMP/trusted-windows-legacy-bridge/hold.json" `
