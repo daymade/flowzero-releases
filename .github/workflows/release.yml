@@ -710,7 +710,7 @@ jobs:
 
       - name: Stage exact Windows release roles
         run: >-
-          pnpm run release:stage:windows:ci --
+          pnpm run release:stage:windows:ci
           --version "${{ needs.prepare.outputs.version }}"
           --release-dir "apps/desktop/out/make/squirrel.windows/x64"
           --output-dir "$env:RUNNER_TEMP/windows-final/artifacts"

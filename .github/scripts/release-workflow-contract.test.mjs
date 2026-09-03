@@ -166,6 +166,15 @@ test('source qualification runs once and platform builds consume the exact quali
   }
 });
 
+test('Windows release staging does not forward pnpm argument separators to the strict parser', () => {
+  const windowsBuild = jobBlock('build-windows');
+  assert.match(
+    windowsBuild,
+    /pnpm run release:stage:windows:ci\s+--version "\$\{\{ needs\.prepare\.outputs\.version \}\}"/u,
+  );
+  assert.doesNotMatch(windowsBuild, /pnpm run release:stage:windows:ci\s+--(?:\s|$)/u);
+});
+
 test('every downstream release job is gated by the durable transaction owner claim', () => {
   for (const name of [
     'qualify-source',
