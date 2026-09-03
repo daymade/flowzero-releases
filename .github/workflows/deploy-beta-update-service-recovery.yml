@@ -196,6 +196,20 @@ jobs:
           gh variable set FLOWZERO_UPDATE_DEPLOYMENT_LEASE \
             --repo daymade/flowzero-update-server \
             --body none
-          test "$(gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LEASE --repo daymade/flowzero-update-server)" = 'none'
+          released=false
+          for delay in 1 2 4 8; do
+            if current="$(gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LEASE --repo daymade/flowzero-update-server)"; then
+              if [[ "$current" = 'none' ]]; then
+                released=true
+                break
+              fi
+              test "$current" = "$owner"
+            fi
+            sleep "$delay"
+          done
+          if [[ "$released" != 'true' ]]; then
+            echo 'deployment lease release did not converge to none' >&2
+            exit 1
+          fi
         env:
           GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}

@@ -109,7 +109,22 @@ test('the public recovery lane deploys one exact private update-server SHA witho
   assert.match(betaUpdateServiceRecoveryWorkflow, /FLOWZERO_UPDATE_DEPLOYMENT_LEASE/u);
   assert.match(betaUpdateServiceRecoveryWorkflow, /owner="run:\$\{GITHUB_RUN_ID\}:attempt:\$\{GITHUB_RUN_ATTEMPT\}"/u);
   assert.match(betaUpdateServiceRecoveryWorkflow, /steps\.lease\.outputs\.acquired == 'true'/u);
-  assert.match(betaUpdateServiceRecoveryWorkflow, /--body none/u);
+  const leaseReleaseStart = betaUpdateServiceRecoveryWorkflow.indexOf(
+    '      - name: Release the private deployment lease',
+  );
+  const leaseReleaseEnd = betaUpdateServiceRecoveryWorkflow.indexOf(
+    '\n        env:',
+    leaseReleaseStart,
+  );
+  assert.ok(leaseReleaseStart >= 0 && leaseReleaseEnd > leaseReleaseStart);
+  const leaseReleaseStep = betaUpdateServiceRecoveryWorkflow.slice(
+    leaseReleaseStart,
+    leaseReleaseEnd,
+  );
+  assert.match(
+    leaseReleaseStep,
+    /test "\$\(gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LEASE --repo daymade\/flowzero-update-server\)" = "\$owner"[\s\S]*gh variable set FLOWZERO_UPDATE_DEPLOYMENT_LEASE[\s\S]*--body none[\s\S]*released=false[\s\S]*for delay in 1 2 4 8; do[\s\S]*if current="\$\(gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LEASE --repo daymade\/flowzero-update-server\)"; then[\s\S]*if \[\[ "\$current" = 'none' \]\]; then[\s\S]*released=true[\s\S]*break[\s\S]*fi[\s\S]*test "\$current" = "\$owner"[\s\S]*fi[\s\S]*sleep "\$delay"[\s\S]*done[\s\S]*if \[\[ "\$released" != 'true' \]\]; then[\s\S]*deployment lease release did not converge to none[\s\S]*exit 1/u,
+  );
   assert.doesNotMatch(
     betaUpdateServiceRecoveryWorkflow,
     /gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LEASE[^\n]*\|\|\s*true/u,
