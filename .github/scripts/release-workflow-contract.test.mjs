@@ -488,6 +488,13 @@ test('a verifier-only Windows correction reuses one immutable candidate and emit
   assert.match(reverifyWindowsBusinessWorkflow, /current private main/u);
   assert.match(reverifyWindowsBusinessWorkflow, /git merge-base --is-ancestor/u);
   assert.match(reverifyWindowsBusinessWorkflow, /verifier-only recovery changed product or unrelated file/u);
+  for (const verifierPath of [
+    'scripts/run-packaged-smoke.cjs',
+    'scripts/windows-process-root.cjs',
+    'apps/desktop/src/test/lint/windows-squirrel-real-install-contract.test.js',
+  ]) {
+    assert.match(reverifyWindowsBusinessWorkflow, new RegExp(verifierPath.replaceAll('.', '\\.'), 'u'));
+  }
   assert.match(reverifyWindowsBusinessWorkflow, /artifact-ids: \$\{\{ inputs\.candidate_artifact_id \}\}/u);
   assert.match(reverifyWindowsBusinessWorkflow, /run-id: \$\{\{ inputs\.source_run_id \}\}/u);
   assert.match(reverifyWindowsBusinessWorkflow, /--suite windows-installer/u);

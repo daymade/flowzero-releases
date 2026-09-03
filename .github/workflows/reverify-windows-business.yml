@@ -79,9 +79,12 @@ jobs:
           $allowed = @(
             'scripts/release-verify-ci.cjs',
             'scripts/build-windows-update-bridge.cjs',
+            'scripts/run-packaged-smoke.cjs',
             'scripts/run-squirrel-legacy-upgrade-smoke-windows.cjs',
+            'scripts/windows-process-root.cjs',
             'apps/desktop/src/helpers/__tests__/releaseIntent.test.js',
-            'apps/desktop/src/test/lint/windows-squirrel-legacy-bridge-contract.test.js'
+            'apps/desktop/src/test/lint/windows-squirrel-legacy-bridge-contract.test.js',
+            'apps/desktop/src/test/lint/windows-squirrel-real-install-contract.test.js'
           )
           foreach ($path in $changed) {
             if ($path -notin $allowed) { throw "verifier-only recovery changed product or unrelated file: $path" }
