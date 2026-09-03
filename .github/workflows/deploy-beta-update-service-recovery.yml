@@ -1,0 +1,201 @@
+name: Deploy Beta Update Service from Public Recovery Lane
+run-name: deploy beta update service ${{ inputs.update_server_sha }} ${{ inputs.beta_verification_mode }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      update_server_sha:
+        description: Exact flowzero-update-server SHA already contained in its private main
+        required: true
+        type: string
+      beta_verification_mode:
+        description: Enter exactly pre_target_hold or post_target
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-flowzero-beta-update-service-production
+  cancel-in-progress: false
+
+jobs:
+  deploy-beta:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Require the trusted public main entrypoint
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          [[ "$UPDATE_SERVER_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$BETA_VERIFICATION_MODE" =~ ^(pre_target_hold|post_target)$ ]]
+        env:
+          UPDATE_SERVER_SHA: ${{ inputs.update_server_sha }}
+          BETA_VERIFICATION_MODE: ${{ inputs.beta_verification_mode }}
+
+      - name: Checkout exact public recovery infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: release-infra
+          persist-credentials: false
+
+      - name: Checkout exact private update-server source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: daymade/flowzero-update-server
+          token: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          ref: ${{ inputs.update_server_sha }}
+          path: update-server
+          persist-credentials: false
+
+      - name: Acquire the private deployment lease
+        id: lease
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="run:${GITHUB_RUN_ID}:attempt:${GITHUB_RUN_ATTEMPT}"
+          current="$(gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LEASE --repo daymade/flowzero-update-server)"
+          test "$current" = 'none'
+          gh variable set FLOWZERO_UPDATE_DEPLOYMENT_LEASE \
+            --repo daymade/flowzero-update-server \
+            --body "$owner"
+          test "$(gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LEASE --repo daymade/flowzero-update-server)" = "$owner"
+          echo 'acquired=true' >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+
+      - name: Prove exact current source ownership and exclude a concurrent private deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C update-server rev-parse HEAD)" = "$UPDATE_SERVER_SHA"
+          main_sha="$(gh api 'repos/daymade/flowzero-update-server/git/ref/heads/main' --jq '.object.sha')"
+          test "$UPDATE_SERVER_SHA" = "$main_sha"
+          active="$(gh api 'repos/daymade/flowzero-update-server/actions/workflows/deploy.yml/runs?per_page=100' \
+            --jq '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress")] | length')"
+          test "$active" = '0'
+        env:
+          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          UPDATE_SERVER_SHA: ${{ inputs.update_server_sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: update-server/package-lock.json
+
+      - name: Install and verify exact update-server source
+        working-directory: update-server
+        run: |
+          npm ci
+          npm test
+          npm install --global vercel@50.37.3
+
+      - name: Bind exact beta project
+        working-directory: update-server
+        run: >-
+          node -e "const fs=require('node:fs');for(const name of ['VERCEL_ORG_ID','VERCEL_PROJECT_ID','VERCEL_PROJECT_NAME'])if(!process.env[name])throw new Error('missing '+name);fs.mkdirSync('.vercel',{recursive:true});fs.writeFileSync('.vercel/project.json',JSON.stringify({orgId:process.env.VERCEL_ORG_ID,projectId:process.env.VERCEL_PROJECT_ID,projectName:process.env.VERCEL_PROJECT_NAME})+'\n')"
+        env:
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_BETA_PROJECT_ID }}
+          VERCEL_PROJECT_NAME: ${{ vars.VERCEL_BETA_PROJECT_NAME }}
+
+      - name: Verify project binding before deploy
+        working-directory: update-server
+        run: npm run deploy:check
+
+      - name: Deploy beta through the canonical update-server entrypoint
+        working-directory: update-server
+        run: |
+          set -euo pipefail
+          owner="run:${GITHUB_RUN_ID}:attempt:${GITHUB_RUN_ATTEMPT}"
+          test "$(gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LEASE --repo daymade/flowzero-update-server)" = "$owner"
+          lane="$(gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LANE --repo daymade/flowzero-update-server)"
+          test "$lane" = 'public_recovery'
+          policy="$(gh variable get FLOWZERO_BETA_PUSH_POLICY --repo daymade/flowzero-update-server)"
+          [[ "$policy" = 'manual_pre_target' || "$policy" = 'post_target' ]]
+          if [[ "$BETA_VERIFICATION_MODE" = 'pre_target_hold' ]]; then
+            test "$policy" = 'manual_pre_target'
+          fi
+          active="$(gh api 'repos/daymade/flowzero-update-server/actions/workflows/deploy.yml/runs?per_page=100' \
+            --jq '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress")] | length')"
+          test "$active" = '0'
+          mkdir -p "$RUNNER_TEMP/update-service-recovery"
+          node scripts/deploy-production.cjs --channel beta \
+            | tee "$RUNNER_TEMP/update-service-recovery/deployment-url.txt"
+        env:
+          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+          BETA_VERIFICATION_MODE: ${{ inputs.beta_verification_mode }}
+          VERCEL_SCOPE: ${{ vars.VERCEL_SCOPE }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          FLOWZERO_RELEASE_ACCOUNT: ${{ vars.FLOWZERO_RELEASE_ACCOUNT }}
+          FLOWZERO_RELEASE_REPOSITORY: ${{ vars.FLOWZERO_RELEASE_REPOSITORY }}
+          FLOWZERO_CHANNEL_MANIFEST_MODE: ${{ vars.FLOWZERO_CHANNEL_MANIFEST_MODE }}
+          FLOWZERO_UPDATE_INTERVAL: ${{ vars.FLOWZERO_UPDATE_INTERVAL }}
+          FLOWZERO_ROLLOUT_JSON: ${{ vars.FLOWZERO_ROLLOUT_JSON }}
+          FLOWZERO_ASSET_BASE_URL: ${{ vars.FLOWZERO_BETA_ASSET_BASE_URL }}
+          FLOWZERO_LEGACY_MANIFEST_URL: ${{ vars.FLOWZERO_BETA_LEGACY_MANIFEST_URL }}
+          FLOWZERO_MACOS_MANIFEST_URL: ${{ vars.FLOWZERO_BETA_MACOS_MANIFEST_URL }}
+          FLOWZERO_WINDOWS_MANIFEST_URL: ${{ vars.FLOWZERO_BETA_WINDOWS_MANIFEST_URL }}
+          FLOWZERO_WINDOWS_LEGACY_BRIDGE_MANIFEST_URL: ${{ vars.FLOWZERO_BETA_WINDOWS_LEGACY_BRIDGE_MANIFEST_URL }}
+          FLOWZERO_WINDOWS_LEGACY_BRIDGE_TARGET_VERSION: ${{ vars.FLOWZERO_BETA_WINDOWS_LEGACY_BRIDGE_TARGET_VERSION }}
+
+      - name: Verify beta production through the canonical canary
+        working-directory: update-server
+        run: |
+          set -euo pipefail
+          node scripts/verify-production-deployment.cjs \
+            --origin "$UPDATE_ORIGIN" \
+            --channel beta \
+            --verification-mode "$BETA_VERIFICATION_MODE" \
+            --asset-base-url "$EXPECTED_ASSET_BASE_URL" \
+            --macos-manifest-url "$FLOWZERO_MACOS_MANIFEST_URL" \
+            --windows-manifest-url "$FLOWZERO_WINDOWS_MANIFEST_URL" \
+            --windows-legacy-bridge-manifest-url "$FLOWZERO_WINDOWS_LEGACY_BRIDGE_MANIFEST_URL" \
+            --windows-legacy-bridge-target-version "$FLOWZERO_WINDOWS_LEGACY_BRIDGE_TARGET_VERSION" \
+            | tee "$RUNNER_TEMP/update-service-recovery/verification.json"
+        env:
+          BETA_VERIFICATION_MODE: ${{ inputs.beta_verification_mode }}
+          UPDATE_ORIGIN: ${{ vars.VERCEL_BETA_UPDATE_ORIGIN }}
+          EXPECTED_ASSET_BASE_URL: ${{ vars.FLOWZERO_BETA_ASSET_BASE_URL }}
+          FLOWZERO_MACOS_MANIFEST_URL: ${{ vars.FLOWZERO_BETA_MACOS_MANIFEST_URL }}
+          FLOWZERO_WINDOWS_MANIFEST_URL: ${{ vars.FLOWZERO_BETA_WINDOWS_MANIFEST_URL }}
+          FLOWZERO_WINDOWS_LEGACY_BRIDGE_MANIFEST_URL: ${{ vars.FLOWZERO_BETA_WINDOWS_LEGACY_BRIDGE_MANIFEST_URL }}
+          FLOWZERO_WINDOWS_LEGACY_BRIDGE_TARGET_VERSION: ${{ vars.FLOWZERO_BETA_WINDOWS_LEGACY_BRIDGE_TARGET_VERSION }}
+
+      - name: Re-prove deployment lane ownership after canary
+        if: success()
+        working-directory: update-server
+        env:
+          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          owner="run:${GITHUB_RUN_ID}:attempt:${GITHUB_RUN_ATTEMPT}"
+          test "$(gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LEASE --repo daymade/flowzero-update-server)" = "$owner"
+          test "$(gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LANE --repo daymade/flowzero-update-server)" = 'public_recovery'
+
+      - name: Upload exact deployment evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: beta-update-service-${{ inputs.beta_verification_mode }}-${{ inputs.update_server_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/update-service-recovery
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Release the private deployment lease
+        if: ${{ always() && steps.lease.outputs.acquired == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="run:${GITHUB_RUN_ID}:attempt:${GITHUB_RUN_ATTEMPT}"
+          test "$(gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LEASE --repo daymade/flowzero-update-server)" = "$owner"
+          gh variable set FLOWZERO_UPDATE_DEPLOYMENT_LEASE \
+            --repo daymade/flowzero-update-server \
+            --body none
+          test "$(gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LEASE --repo daymade/flowzero-update-server)" = 'none'
+        env:
+          GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}

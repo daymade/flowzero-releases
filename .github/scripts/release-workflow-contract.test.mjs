@@ -7,6 +7,10 @@ const workerDeployWorkflow = await readFile(
   new URL('../workflows/deploy-release-download-worker.yml', import.meta.url),
   'utf8',
 );
+const betaUpdateServiceRecoveryWorkflow = await readFile(
+  new URL('../workflows/deploy-beta-update-service-recovery.yml', import.meta.url),
+  'utf8',
+);
 const mirrorAction = await readFile(new URL('../actions/mirror-release-assets/action.yml', import.meta.url), 'utf8');
 const promoteAction = await readFile(new URL('../actions/promote-update-channel/action.yml', import.meta.url), 'utf8');
 const mirrorScript = await readFile(new URL('./mirror-release-assets.mjs', import.meta.url), 'utf8');
@@ -75,6 +79,52 @@ test('the download gateway has remote CD with exact credentials and two-route re
   assert.match(workerDeployWorkflow, /vars\.FLOWZERO_WORKER_DEV_ORIGIN/u);
   assert.match(workerDeployWorkflow, /vars\.FLOWZERO_DOWNLOAD_ORIGIN/u);
   assert.match(workerDeployWorkflow, /_health/u);
+});
+
+test('the public recovery lane deploys one exact private update-server SHA without weakening canaries', () => {
+  const uses = [...betaUpdateServiceRecoveryWorkflow.matchAll(/^\s+uses:\s+([^\s#]+)/gmu)]
+    .map((match) => match[1]);
+  assert.ok(uses.length > 0);
+  for (const value of uses) {
+    assert.match(value, /^[^@]+@[a-f0-9]{40}$/u, `un-pinned update-service recovery action: ${value}`);
+  }
+  assert.match(betaUpdateServiceRecoveryWorkflow, /workflow_dispatch:/u);
+  assert.doesNotMatch(betaUpdateServiceRecoveryWorkflow, /^\s+push:/mu);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /test "\$GITHUB_REF" = "refs\/heads\/main"/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /update_server_sha:[\s\S]*?required: true/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /beta_verification_mode:[\s\S]*?required: true/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /repository: daymade\/flowzero-update-server/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /token: \$\{\{ secrets\.FLOWZERO_REPO_TOKEN \}\}/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /ref: \$\{\{ inputs\.update_server_sha \}\}/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /git\/ref\/heads\/main/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /test "\$UPDATE_SERVER_SHA" = "\$main_sha"/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /select\(\.status == "queued" or \.status == "in_progress"\)/u);
+  assert.equal(
+    [...betaUpdateServiceRecoveryWorkflow.matchAll(/gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LANE --repo daymade\/flowzero-update-server/gu)].length,
+    2,
+  );
+  assert.match(betaUpdateServiceRecoveryWorkflow, /test "\$lane" = 'public_recovery'/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /FLOWZERO_BETA_PUSH_POLICY/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /test "\$policy" = 'manual_pre_target'/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /FLOWZERO_UPDATE_DEPLOYMENT_LEASE/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /owner="run:\$\{GITHUB_RUN_ID\}:attempt:\$\{GITHUB_RUN_ATTEMPT\}"/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /steps\.lease\.outputs\.acquired == 'true'/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /--body none/u);
+  assert.doesNotMatch(
+    betaUpdateServiceRecoveryWorkflow,
+    /gh variable get FLOWZERO_UPDATE_DEPLOYMENT_LEASE[^\n]*\|\|\s*true/u,
+  );
+  assert.match(betaUpdateServiceRecoveryWorkflow, /npm test/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /vercel@50\.37\.3/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /npm run deploy:check/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /scripts\/deploy-production\.cjs --channel beta/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /scripts\/verify-production-deployment\.cjs/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /--verification-mode "\$BETA_VERIFICATION_MODE"/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /--windows-legacy-bridge-target-version/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /secrets\.VERCEL_TOKEN/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /vars\.FLOWZERO_BETA_WINDOWS_LEGACY_BRIDGE_MANIFEST_URL/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /vars\.FLOWZERO_BETA_WINDOWS_LEGACY_BRIDGE_TARGET_VERSION/u);
+  assert.doesNotMatch(betaUpdateServiceRecoveryWorkflow, /continue-on-error:/u);
 });
 
 test('source qualification runs once and platform builds consume the exact qualified SHA', () => {
