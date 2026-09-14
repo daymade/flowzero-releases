@@ -136,7 +136,11 @@ test('the public recovery lane deploys one exact private update-server SHA witho
   assert.match(betaUpdateServiceRecoveryWorkflow, /npm test/u);
   assert.match(betaUpdateServiceRecoveryWorkflow, /vercel@50\.37\.3/u);
   assert.match(betaUpdateServiceRecoveryWorkflow, /npm run deploy:check/u);
-  assert.match(betaUpdateServiceRecoveryWorkflow, /scripts\/deploy-production\.cjs --channel beta/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /scripts\/deploy-production\.cjs --channel "\$DEPLOY_CHANNEL"/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /options: \[beta, stable\]/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /vars\.VERCEL_STABLE_PROJECT_ID/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /vars\.VERCEL_BETA_PROJECT_ID/u);
+  assert.match(betaUpdateServiceRecoveryWorkflow, /test "\$BETA_VERIFICATION_MODE" = post_target/u);
   assert.match(betaUpdateServiceRecoveryWorkflow, /scripts\/verify-production-deployment\.cjs/u);
   assert.match(betaUpdateServiceRecoveryWorkflow, /--verification-mode "\$BETA_VERIFICATION_MODE"/u);
   assert.match(betaUpdateServiceRecoveryWorkflow, /--windows-legacy-bridge-target-version/u);

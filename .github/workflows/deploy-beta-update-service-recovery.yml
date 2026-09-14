@@ -1,9 +1,14 @@
-name: Deploy Beta Update Service from Public Recovery Lane
-run-name: deploy beta update service ${{ inputs.update_server_sha }} ${{ inputs.beta_verification_mode }}
+name: Deploy Update Service from Public Recovery Lane
+run-name: deploy ${{ inputs.channel || 'beta' }} update service ${{ inputs.update_server_sha }} ${{ inputs.beta_verification_mode }}
 
 on:
   workflow_dispatch:
     inputs:
+      channel:
+        description: Update channel to recover
+        type: choice
+        options: [beta, stable]
+        default: beta
       update_server_sha:
         description: Exact flowzero-update-server SHA already contained in its private main
         required: true
@@ -24,11 +29,15 @@ jobs:
   deploy-beta:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      DEPLOY_CHANNEL: ${{ inputs.channel || 'beta' }}
     steps:
       - name: Require the trusted public main entrypoint
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = "refs/heads/main"
+          [[ "$DEPLOY_CHANNEL" =~ ^(beta|stable)$ ]]
+          if [[ "$DEPLOY_CHANNEL" = stable ]]; then test "$BETA_VERIFICATION_MODE" = post_target; fi
           [[ "$UPDATE_SERVER_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$BETA_VERIFICATION_MODE" =~ ^(pre_target_hold|post_target)$ ]]
         env:
@@ -95,20 +104,20 @@ jobs:
           npm test
           npm install --global vercel@50.37.3
 
-      - name: Bind exact beta project
+      - name: Bind exact channel project
         working-directory: update-server
         run: >-
           node -e "const fs=require('node:fs');for(const name of ['VERCEL_ORG_ID','VERCEL_PROJECT_ID','VERCEL_PROJECT_NAME'])if(!process.env[name])throw new Error('missing '+name);fs.mkdirSync('.vercel',{recursive:true});fs.writeFileSync('.vercel/project.json',JSON.stringify({orgId:process.env.VERCEL_ORG_ID,projectId:process.env.VERCEL_PROJECT_ID,projectName:process.env.VERCEL_PROJECT_NAME})+'\n')"
         env:
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ vars.VERCEL_BETA_PROJECT_ID }}
-          VERCEL_PROJECT_NAME: ${{ vars.VERCEL_BETA_PROJECT_NAME }}
+          VERCEL_PROJECT_ID: ${{ inputs.channel == 'stable' && vars.VERCEL_STABLE_PROJECT_ID || vars.VERCEL_BETA_PROJECT_ID }}
+          VERCEL_PROJECT_NAME: ${{ inputs.channel == 'stable' && vars.VERCEL_STABLE_PROJECT_NAME || vars.VERCEL_BETA_PROJECT_NAME }}
 
       - name: Verify project binding before deploy
         working-directory: update-server
         run: npm run deploy:check
 
-      - name: Deploy beta through the canonical update-server entrypoint
+      - name: Deploy selected channel through the canonical update-server entrypoint
         working-directory: update-server
         run: |
           set -euo pipefail
@@ -125,7 +134,7 @@ jobs:
             --jq '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress")] | length')"
           test "$active" = '0'
           mkdir -p "$RUNNER_TEMP/update-service-recovery"
-          node scripts/deploy-production.cjs --channel beta \
+          node scripts/deploy-production.cjs --channel "$DEPLOY_CHANNEL" \
             | tee "$RUNNER_TEMP/update-service-recovery/deployment-url.txt"
         env:
           GH_TOKEN: ${{ secrets.FLOWZERO_REPO_TOKEN }}
@@ -137,20 +146,20 @@ jobs:
           FLOWZERO_CHANNEL_MANIFEST_MODE: ${{ vars.FLOWZERO_CHANNEL_MANIFEST_MODE }}
           FLOWZERO_UPDATE_INTERVAL: ${{ vars.FLOWZERO_UPDATE_INTERVAL }}
           FLOWZERO_ROLLOUT_JSON: ${{ vars.FLOWZERO_ROLLOUT_JSON }}
-          FLOWZERO_ASSET_BASE_URL: ${{ vars.FLOWZERO_BETA_ASSET_BASE_URL }}
-          FLOWZERO_LEGACY_MANIFEST_URL: ${{ vars.FLOWZERO_BETA_LEGACY_MANIFEST_URL }}
-          FLOWZERO_MACOS_MANIFEST_URL: ${{ vars.FLOWZERO_BETA_MACOS_MANIFEST_URL }}
-          FLOWZERO_WINDOWS_MANIFEST_URL: ${{ vars.FLOWZERO_BETA_WINDOWS_MANIFEST_URL }}
+          FLOWZERO_ASSET_BASE_URL: ${{ inputs.channel == 'stable' && vars.FLOWZERO_STABLE_ASSET_BASE_URL || vars.FLOWZERO_BETA_ASSET_BASE_URL }}
+          FLOWZERO_LEGACY_MANIFEST_URL: ${{ inputs.channel == 'stable' && vars.FLOWZERO_STABLE_LEGACY_MANIFEST_URL || vars.FLOWZERO_BETA_LEGACY_MANIFEST_URL }}
+          FLOWZERO_MACOS_MANIFEST_URL: ${{ inputs.channel == 'stable' && vars.FLOWZERO_STABLE_MACOS_MANIFEST_URL || vars.FLOWZERO_BETA_MACOS_MANIFEST_URL }}
+          FLOWZERO_WINDOWS_MANIFEST_URL: ${{ inputs.channel == 'stable' && vars.FLOWZERO_STABLE_WINDOWS_MANIFEST_URL || vars.FLOWZERO_BETA_WINDOWS_MANIFEST_URL }}
           FLOWZERO_WINDOWS_LEGACY_BRIDGE_MANIFEST_URL: ${{ vars.FLOWZERO_BETA_WINDOWS_LEGACY_BRIDGE_MANIFEST_URL }}
           FLOWZERO_WINDOWS_LEGACY_BRIDGE_TARGET_VERSION: ${{ vars.FLOWZERO_BETA_WINDOWS_LEGACY_BRIDGE_TARGET_VERSION }}
 
-      - name: Verify beta production through the canonical canary
+      - name: Verify selected channel production through the canonical canary
         working-directory: update-server
         run: |
           set -euo pipefail
           node scripts/verify-production-deployment.cjs \
             --origin "$UPDATE_ORIGIN" \
-            --channel beta \
+            --channel "$DEPLOY_CHANNEL" \
             --verification-mode "$BETA_VERIFICATION_MODE" \
             --asset-base-url "$EXPECTED_ASSET_BASE_URL" \
             --macos-manifest-url "$FLOWZERO_MACOS_MANIFEST_URL" \
@@ -160,10 +169,10 @@ jobs:
             | tee "$RUNNER_TEMP/update-service-recovery/verification.json"
         env:
           BETA_VERIFICATION_MODE: ${{ inputs.beta_verification_mode }}
-          UPDATE_ORIGIN: ${{ vars.VERCEL_BETA_UPDATE_ORIGIN }}
-          EXPECTED_ASSET_BASE_URL: ${{ vars.FLOWZERO_BETA_ASSET_BASE_URL }}
-          FLOWZERO_MACOS_MANIFEST_URL: ${{ vars.FLOWZERO_BETA_MACOS_MANIFEST_URL }}
-          FLOWZERO_WINDOWS_MANIFEST_URL: ${{ vars.FLOWZERO_BETA_WINDOWS_MANIFEST_URL }}
+          UPDATE_ORIGIN: ${{ inputs.channel == 'stable' && vars.VERCEL_STABLE_UPDATE_ORIGIN || vars.VERCEL_BETA_UPDATE_ORIGIN }}
+          EXPECTED_ASSET_BASE_URL: ${{ inputs.channel == 'stable' && vars.FLOWZERO_STABLE_ASSET_BASE_URL || vars.FLOWZERO_BETA_ASSET_BASE_URL }}
+          FLOWZERO_MACOS_MANIFEST_URL: ${{ inputs.channel == 'stable' && vars.FLOWZERO_STABLE_MACOS_MANIFEST_URL || vars.FLOWZERO_BETA_MACOS_MANIFEST_URL }}
+          FLOWZERO_WINDOWS_MANIFEST_URL: ${{ inputs.channel == 'stable' && vars.FLOWZERO_STABLE_WINDOWS_MANIFEST_URL || vars.FLOWZERO_BETA_WINDOWS_MANIFEST_URL }}
           FLOWZERO_WINDOWS_LEGACY_BRIDGE_MANIFEST_URL: ${{ vars.FLOWZERO_BETA_WINDOWS_LEGACY_BRIDGE_MANIFEST_URL }}
           FLOWZERO_WINDOWS_LEGACY_BRIDGE_TARGET_VERSION: ${{ vars.FLOWZERO_BETA_WINDOWS_LEGACY_BRIDGE_TARGET_VERSION }}
 
