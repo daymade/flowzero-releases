@@ -60,6 +60,11 @@
       "tag": "v0.1.2-beta.31",
       "withdrawn_on": "2026-09-01",
       "reason": "internal_test_release_withdrawn"
+    },
+    {
+      "tag": "v0.1.5-beta.4",
+      "withdrawn_on": "2026-09-14",
+      "reason": "internal_test_release_withdrawn"
     }
   ]
 }
