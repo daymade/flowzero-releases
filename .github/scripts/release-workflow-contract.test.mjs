@@ -55,6 +55,59 @@ function jobBlock(name) {
   return next < 0 ? workflow.slice(start) : workflow.slice(start, start + marker.length + next);
 }
 
+function stepBlock(block, name) {
+  const marker = `      - name: ${name}\n`;
+  const start = block.indexOf(marker);
+  assert.ok(start >= 0, `missing workflow step: ${name}`);
+  const next = block.indexOf('\n      - name:', start + marker.length);
+  return next < 0 ? block.slice(start) : block.slice(start, next);
+}
+
+function assertMacSigningLifecycle(block) {
+  assert.doesNotMatch(block, /apple-actions\/import-codesign-certs/u, 'retired_import_action');
+  assert.doesNotMatch(block, /resolve-macos-signing-identity\.cjs/u, 'retired_global_identity_resolver');
+  assert.doesNotMatch(block, /signing_temp\.keychain/u, 'hardcoded_signing_keychain');
+  assert.doesNotMatch(block, /continue-on-error:/u, 'signing_failure_must_fail_job');
+  const prepare = stepBlock(block, 'Prepare the exact source signing context');
+  const verify = stepBlock(block, 'Verify the exact source signing context');
+  const cleanup = stepBlock(block, "Remove this job's signing context");
+  const owner = 'node scripts/release/macos-signing-context.cjs';
+  for (const [action, step] of [['prepare', prepare], ['verify', verify], ['cleanup', cleanup]]) {
+    assert.ok(
+      step.includes(`${owner} ${action} --head-sha "\${{ needs.prepare.outputs.head_sha }}"`),
+      `${action}_source_head_mismatch`,
+    );
+  }
+  assert.match(
+    prepare,
+    /if \[ ! -f scripts\/release\/macos-signing-context\.cjs \]; then\s+echo 'macos_signing_owner_missing' >&2\s+exit 1\s+fi\s+node scripts\/release\/macos-signing-context\.cjs prepare/u,
+    'missing_owner_must_fail_closed',
+  );
+  const prepareEnvNames = [...prepare.matchAll(/^          ([A-Z0-9_]+):/gmu)]
+    .map((match) => match[1]).sort();
+  assert.deepEqual(
+    prepareEnvNames,
+    ['APPLE_TEAM_ID', 'MACOS_CERT_P12', 'MACOS_CERT_PASSWORD'],
+    'prepare_only_signing_secrets',
+  );
+  assert.doesNotMatch(verify, /\n        env:/u, 'verify_uses_registered_context');
+  assert.doesNotMatch(cleanup, /\n        env:/u, 'cleanup_uses_registered_context');
+  assert.match(
+    cleanup,
+    /if: always\(\) && env\.FLOWZERO_CI_SIGNING_CONTEXT != ''/u,
+    'cleanup_must_run_after_failure_only_for_registered_context',
+  );
+  const build = stepBlock(block, 'Build and sign final DMG candidate');
+  assert.match(build, /FLOWZERO_CODESIGN: '1'/u);
+  assert.doesNotMatch(build, /MACOS_SIGNING_KEYCHAIN:|MACOS_CODESIGN_IDENTITY:/u, 'build_must_keep_owner_environment');
+  assert.equal((block.match(/pnpm run release:build:ci/gu) || []).length, 1);
+  assert.ok(block.indexOf('Checkout exact private source') < block.indexOf(prepare));
+  assert.ok(block.indexOf('Setup Node.js') < block.indexOf(prepare));
+  assert.ok(block.indexOf(prepare) < block.indexOf(verify));
+  assert.ok(block.indexOf(verify) < block.indexOf(build));
+  assert.ok(block.indexOf('Upload notarization checkpoint') < block.indexOf(cleanup));
+}
+
 test('all external actions are pinned to immutable full commit SHAs', () => {
   const uses = [...workflow.matchAll(/^\s+uses:\s+([^\s#]+)/gmu)].map((match) => match[1]);
   const external = uses.filter((value) => !value.startsWith('./'));
@@ -171,6 +224,73 @@ test('source qualification runs once and platform builds consume the exact quali
   assert.match(windowsBuild, /pnpm run release:build:ci/u);
   for (const block of [qualification, macBuild, windowsBuild]) {
     assert.match(block, /ref: \$\{\{ needs\.prepare\.outputs\.head_sha \}\}/u);
+  }
+});
+
+test('Mac signing consumes one exact source owner and cleans registered context after failures', () => {
+  assertMacSigningLifecycle(jobBlock('build-macos'));
+  for (const name of ['finalize-macos', 'accept-macos-fixture', 'accept-macos-live-stepfun']) {
+    assert.doesNotMatch(jobBlock(name), /macos-signing-context\.cjs|import-codesign-certs/u);
+  }
+});
+
+test('Mac signing contract rejects retired import, hardcoded keychain, and wrong source identity', () => {
+  const block = jobBlock('build-macos');
+  const prepare = stepBlock(block, 'Prepare the exact source signing context');
+  const build = stepBlock(block, 'Build and sign final DMG candidate');
+  const negativeCases = [
+    [
+      block.replace(prepare, `      - name: Import Apple certificate\n        uses: apple-actions/import-codesign-certs@5142e029c445c10ffc7149d172e540235a065466\n\n${prepare}`),
+      /retired_import_action/u,
+    ],
+    [
+      block.replace(prepare, `      - name: Resolve exact Developer ID identity\n        run: node scripts/release/resolve-macos-signing-identity.cjs\n\n${prepare}`),
+      /retired_global_identity_resolver/u,
+    ],
+    [
+      block.replace(build, build.replace("FLOWZERO_CODESIGN: '1'", "FLOWZERO_CODESIGN: '1'\n          MACOS_SIGNING_KEYCHAIN: signing_temp.keychain")),
+      /hardcoded_signing_keychain/u,
+    ],
+  ];
+  for (const action of ['prepare', 'verify', 'cleanup']) {
+    negativeCases.push([
+      block.replace(
+        `${action} --head-sha "\${{ needs.prepare.outputs.head_sha }}"`,
+        `${action} --head-sha "\${{ github.sha }}"`,
+      ),
+      new RegExp(`${action}_source_head_mismatch`, 'u'),
+    ]);
+  }
+  for (const [mutated, reason] of negativeCases) {
+    assert.notEqual(mutated, block, 'negative fixture must change the actual job');
+    assert.throws(() => assertMacSigningLifecycle(mutated), reason);
+  }
+});
+
+test('Mac signing contract rejects missing owner guard, excess credentials, and conditional cleanup', () => {
+  const block = jobBlock('build-macos');
+  const prepare = stepBlock(block, 'Prepare the exact source signing context');
+  const negativeCases = [
+    [
+      block.replace(prepare, prepare.replace(/          if \[ ! -f scripts\/release\/macos-signing-context\.cjs \]; then[\s\S]*?          fi\n/u, '')),
+      /missing_owner_must_fail_closed/u,
+    ],
+    [
+      block.replace(prepare, prepare.replace('          APPLE_TEAM_ID:', '          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}\n          APPLE_TEAM_ID:')),
+      /prepare_only_signing_secrets/u,
+    ],
+    [
+      block.replace("if: always() && env.FLOWZERO_CI_SIGNING_CONTEXT != ''", "if: success() && env.FLOWZERO_CI_SIGNING_CONTEXT != ''"),
+      /cleanup_must_run_after_failure_only_for_registered_context/u,
+    ],
+    [
+      block.replace("if: always() && env.FLOWZERO_CI_SIGNING_CONTEXT != ''", 'if: always()'),
+      /cleanup_must_run_after_failure_only_for_registered_context/u,
+    ],
+  ];
+  for (const [mutated, reason] of negativeCases) {
+    assert.notEqual(mutated, block, 'negative fixture must change the actual job');
+    assert.throws(() => assertMacSigningLifecycle(mutated), reason);
   }
 });
 

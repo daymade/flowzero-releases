@@ -278,16 +278,20 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      - name: Import Apple certificate
-        uses: apple-actions/import-codesign-certs@5142e029c445c10ffc7149d172e540235a065466 # v7
-        with:
-          p12-file-base64: ${{ secrets.MACOS_CERT_P12 }}
-          p12-password: ${{ secrets.MACOS_CERT_PASSWORD }}
-
-      - name: Resolve exact Developer ID identity
-        run: node scripts/release/resolve-macos-signing-identity.cjs
+      - name: Prepare the exact source signing context
+        run: |
+          if [ ! -f scripts/release/macos-signing-context.cjs ]; then
+            echo 'macos_signing_owner_missing' >&2
+            exit 1
+          fi
+          node scripts/release/macos-signing-context.cjs prepare --head-sha "${{ needs.prepare.outputs.head_sha }}"
         env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Verify the exact source signing context
+        run: node scripts/release/macos-signing-context.cjs verify --head-sha "${{ needs.prepare.outputs.head_sha }}"
 
       - name: Install exact dependencies
         run: pnpm install --frozen-lockfile
@@ -309,7 +313,6 @@ jobs:
         env:
           FLOWZERO_CODESIGN: '1'
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          MACOS_SIGNING_KEYCHAIN: signing_temp.keychain
 
       - name: Verify signed package structure before Apple submission
         run: >-
@@ -353,6 +356,10 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
+
+      - name: Remove this job's signing context
+        if: always() && env.FLOWZERO_CI_SIGNING_CONTEXT != ''
+        run: node scripts/release/macos-signing-context.cjs cleanup --head-sha "${{ needs.prepare.outputs.head_sha }}"
 
   finalize-macos:
     if: needs.prepare.outputs.is_owner == 'true' && needs.prepare.outputs.macos_requested == 'true'
