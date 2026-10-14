@@ -384,7 +384,7 @@ jobs:
           node-version-file: .nvmrc
 
       - name: Download exact notarization checkpoint by artifact ID
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.build-macos.outputs.stage_artifact_id }}
           path: apps/desktop/out
@@ -449,7 +449,7 @@ jobs:
             "$RUNNER_TEMP/mac-final/evidence/apple-notary-log.json"
 
       - name: Download immutable release transaction for Mac recovery
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.prepare.outputs.transaction_artifact_id }}
           path: ${{ runner.temp }}/mac-transaction
@@ -504,7 +504,7 @@ jobs:
         run: node apps/desktop/scripts/meeting/build-meeting-e2e-fixtures.cjs
 
       - name: Download exact final Mac candidate by artifact ID
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.finalize-macos.outputs.final_artifact_id }}
           path: ${{ runner.temp }}/mac-final
@@ -563,7 +563,7 @@ jobs:
         run: node apps/desktop/scripts/meeting/build-meeting-e2e-fixtures.cjs
 
       - name: Download exact final Mac candidate by artifact ID
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.finalize-macos.outputs.final_artifact_id }}
           path: ${{ runner.temp }}/mac-final
@@ -609,13 +609,13 @@ jobs:
       verification_artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - name: Download exact deterministic Mac acceptance receipt
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.accept-macos-fixture.outputs.verification_artifact_id }}
           path: ${{ runner.temp }}/mac-verification
 
       - name: Download exact live StepFun Mac acceptance receipt
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.accept-macos-live-stepfun.outputs.verification_artifact_id }}
           path: ${{ runner.temp }}/mac-verification
@@ -760,7 +760,7 @@ jobs:
             --output "$env:RUNNER_TEMP/windows-final/evidence/candidate.json"
 
       - name: Download immutable release transaction for Windows recovery
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.prepare.outputs.transaction_artifact_id }}
           path: ${{ runner.temp }}/windows-transaction
@@ -821,7 +821,7 @@ jobs:
           SKIP_INSTALL_CONFIRM: '1'
 
       - name: Download exact final Windows candidate by artifact ID
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.build-windows.outputs.final_artifact_id }}
           path: ${{ runner.temp }}/windows-final
@@ -922,13 +922,13 @@ jobs:
           persist-credentials: false
 
       - name: Download exact final Mac candidate
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.finalize-macos.outputs.final_artifact_id }}
           path: ${{ runner.temp }}/mac-final
 
       - name: Download exact Mac acceptance receipt
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.accept-macos.outputs.verification_artifact_id }}
           path: ${{ runner.temp }}/mac-verification
@@ -1029,19 +1029,19 @@ jobs:
           persist-credentials: false
 
       - name: Download exact final Windows candidate
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.build-windows.outputs.final_artifact_id }}
           path: ${{ runner.temp }}/windows-final
 
       - name: Download exact Windows acceptance receipt
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.accept-windows.outputs.verification_artifact_id }}
           path: ${{ runner.temp }}/windows-verification
 
       - name: Download immutable release transaction
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.prepare.outputs.transaction_artifact_id }}
           path: ${{ runner.temp }}/windows-transaction
@@ -1173,7 +1173,7 @@ jobs:
           persist-credentials: false
 
       - name: Download Mac mirrored checkpoint
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.mirror-macos.outputs.state_artifact_id }}
           path: ${{ runner.temp }}/mac-state
@@ -1219,7 +1219,7 @@ jobs:
           persist-credentials: false
 
       - name: Download Windows mirrored checkpoint
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.mirror-windows.outputs.state_artifact_id }}
           path: ${{ runner.temp }}/windows-state
@@ -1306,35 +1306,35 @@ jobs:
           persist-credentials: false
 
       - name: Download immutable transaction
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.prepare.outputs.transaction_artifact_id }}
           path: ${{ runner.temp }}/archive-input/transaction
 
       - name: Download final Mac candidate
         if: needs.prepare.outputs.macos_requested == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.mirror-macos.outputs.final_artifact_id }}
           path: ${{ runner.temp }}/archive-input/macos-arm64/final
 
       - name: Download Mac verification
         if: needs.prepare.outputs.macos_requested == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.mirror-macos.outputs.verification_artifact_id }}
           path: ${{ runner.temp }}/archive-input/macos-arm64/verification
 
       - name: Download final Windows candidate
         if: needs.prepare.outputs.windows_requested == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.mirror-windows.outputs.final_artifact_id }}
           path: ${{ runner.temp }}/archive-input/windows-x64/final
 
       - name: Download Windows verification
         if: needs.prepare.outputs.windows_requested == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.mirror-windows.outputs.verification_artifact_id }}
           path: ${{ runner.temp }}/archive-input/windows-x64/verification
