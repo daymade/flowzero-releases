@@ -159,7 +159,7 @@ jobs:
       - name: Upload immutable transaction intent
         if: steps.claim.outputs.is_owner == 'true'
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: transaction-${{ steps.transaction.outputs.transaction_short }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-transaction.json
@@ -346,7 +346,7 @@ jobs:
 
       - name: Upload notarization checkpoint
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: macos-notary-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
           path: |
@@ -461,7 +461,7 @@ jobs:
 
       - name: Upload immutable final Mac candidate
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: macos-final-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/mac-final
@@ -521,7 +521,7 @@ jobs:
 
       - name: Upload deterministic Mac business acceptance receipt
         id: upload-fixture
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: macos-fixture-verification-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/mac-verification/verification.json
@@ -584,7 +584,7 @@ jobs:
 
       - name: Preserve failed live StepFun diagnostic
         if: ${{ always() && steps.live-stepfun.outcome == 'failure' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: macos-live-stepfun-diagnostic-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/mac-verification/live-stepfun-timeline.failure.json
@@ -593,7 +593,7 @@ jobs:
 
       - name: Upload live StepFun Mac acceptance receipt
         id: upload-live
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: macos-live-stepfun-verification-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/mac-verification/live-stepfun-timeline.json
@@ -628,7 +628,7 @@ jobs:
 
       - name: Upload combined Mac business acceptance receipt
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: macos-verification-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/mac-verification
@@ -774,7 +774,7 @@ jobs:
 
       - name: Upload immutable final Windows candidate
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-final-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/windows-final
@@ -898,7 +898,7 @@ jobs:
 
       - name: Upload Windows acceptance receipt
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-verification-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/windows-verification
@@ -1005,7 +1005,7 @@ jobs:
 
       - name: Upload durable Mac state checkpoint
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: macos-state-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/mac-state
@@ -1149,7 +1149,7 @@ jobs:
 
       - name: Upload durable Windows state checkpoint
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-state-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/windows-state
@@ -1195,7 +1195,7 @@ jobs:
           ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
 
       - name: Preserve Mac promotion receipt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: macos-promotion-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/mac-promotion.json
@@ -1243,7 +1243,7 @@ jobs:
           ALIYUN_OSS_PUBLIC_BASE_URL: https://flowzero-releases-cn.oss-cn-beijing.aliyuncs.com
 
       - name: Preserve Windows promotion receipt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-promotion-${{ needs.prepare.outputs.transaction_short }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/windows-promotion.json
