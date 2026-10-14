@@ -106,7 +106,7 @@ jobs:
         run: node apps/desktop/scripts/meeting/build-meeting-e2e-fixtures.cjs
 
       - name: Download exact immutable Mac candidate
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ inputs.candidate_artifact_id }}
           run-id: ${{ inputs.source_run_id }}
@@ -114,7 +114,7 @@ jobs:
           path: ${{ runner.temp }}/mac-final
 
       - name: Download accepted deterministic business receipt
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ inputs.fixture_verification_artifact_id }}
           run-id: ${{ inputs.source_run_id }}
